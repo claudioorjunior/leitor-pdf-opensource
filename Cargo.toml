@@ -1,0 +1,15 @@
+[workspace]
+members = ["crates/folio-sign", "src-tauri"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
