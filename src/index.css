@@ -1,22 +1,23 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Segoe UI", "SF Pro Text", "Helvetica Neue", ui-sans-serif, system-ui, sans-serif;
-  --color-ink: #1c1915;
-  --color-muted: #6b6459;
-  --color-paper: #f4efe6;
-  --color-sheet: #fffcf7;
-  --color-teal: #0f6b5c;
-  --color-teal-soft: #e4f2ee;
-  --color-seal: #c45c26;
-  --color-line: #d9d1c3;
-  --color-danger: #9f2d2d;
+  --font-sans: "SF Pro Text", "Segoe UI Variable", "Segoe UI", "Helvetica Neue",
+    ui-sans-serif, system-ui, sans-serif;
+  --color-desk: #b9b7b2;
+  --color-chrome: #f4f3f1;
+  --color-ink: #1c1c1c;
+  --color-quiet: #6a6a6a;
+  --color-hairline: rgb(0 0 0 / 0.1);
+  --color-good: #2f7d4a;
+  --color-caution: #9a5b12;
+  --color-bad: #b42318;
+  --color-mark: #0f6b5c;
 }
 
 :root {
   color-scheme: light;
   font-family: var(--font-sans);
-  background: var(--color-paper);
+  background: var(--color-desk);
   color: var(--color-ink);
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -44,22 +45,83 @@ input {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--color-teal) 28%, transparent);
+  background: rgb(15 107 92 / 0.22);
 }
 
-/* pdf.js text layer — keeps selection aligned with painted glyphs */
+.app-shell {
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgb(255 255 255 / 0.18), transparent 55%),
+    var(--color-desk);
+}
+
+.titlebar {
+  background: linear-gradient(180deg, #f7f6f4 0%, #efeeeb 100%);
+  box-shadow: inset 0 -1px var(--color-hairline);
+}
+
+.icon-btn {
+  display: inline-flex;
+  height: 28px;
+  width: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #3d3d3d;
+  cursor: pointer;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: rgb(0 0 0 / 0.06);
+}
+
+.icon-btn:active:not(:disabled) {
+  background: rgb(0 0 0 / 0.1);
+}
+
+.icon-btn:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.icon-btn[data-on="true"] {
+  background: rgb(0 0 0 / 0.08);
+  color: var(--color-ink);
+}
+
+.seg {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / 0.05);
+}
+
+.seg .icon-btn {
+  height: 24px;
+  width: 24px;
+}
+
+.page-sheet {
+  background: #fff;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.06),
+    0 1px 1px rgb(0 0 0 / 0.04),
+    0 18px 50px rgb(40 38 34 / 0.22);
+}
+
 .textLayer {
   position: absolute;
   inset: 0;
   overflow: hidden;
-  opacity: 1;
   line-height: 1;
   -webkit-text-size-adjust: none;
   text-size-adjust: none;
-  forced-color-adjust: none;
   transform-origin: 0 0;
   z-index: 2;
-  caret-color: var(--color-teal);
+  caret-color: var(--color-mark);
 }
 
 .textLayer span,
@@ -76,8 +138,8 @@ input {
 }
 
 .textLayer .highlight {
-  background: rgb(196 92 38 / 0.35);
-  border-radius: 2px;
+  background: rgb(232 176 60 / 0.55);
+  border-radius: 1px;
 }
 
 .annotationLayer {
@@ -90,26 +152,37 @@ input {
   position: absolute;
   display: block;
   background: rgb(15 107 92 / 0.08);
-  border-radius: 2px;
 }
 
 .annotationLayer a:hover {
   background: rgb(15 107 92 / 0.16);
 }
 
-.page-sheet {
+.hud {
+  pointer-events: none;
+  background: rgb(28 28 28 / 0.72);
+  color: #fff;
+  backdrop-filter: blur(12px);
+}
+
+.file-row:hover {
+  background: rgb(255 255 255 / 0.42);
+}
+
+.thumb-doc {
+  background: #fff;
   box-shadow:
-    0 1px 1px rgb(28 25 21 / 0.04),
-    0 18px 40px rgb(28 25 21 / 0.08);
+    0 0 0 1px rgb(0 0 0 / 0.08),
+    0 6px 16px rgb(0 0 0 / 0.12);
 }
 
 .scrollbar-thin::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 11px;
+  height: 11px;
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: rgb(28 25 21 / 0.18);
+  background: rgb(0 0 0 / 0.22);
   border-radius: 99px;
   border: 2px solid transparent;
   background-clip: padding-box;
@@ -117,4 +190,14 @@ input {
 
 .scrollbar-thin::-webkit-scrollbar-track {
   background: transparent;
+}
+
+@media (max-width: 720px) {
+  .sig-dock {
+    position: absolute;
+    inset: 0 0 0 auto;
+    z-index: 20;
+    width: min(100%, 320px);
+    box-shadow: -12px 0 40px rgb(0 0 0 / 0.18);
+  }
 }

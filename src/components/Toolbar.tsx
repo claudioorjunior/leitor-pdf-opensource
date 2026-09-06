@@ -1,14 +1,14 @@
 import {
   ChevronLeft,
   ChevronRight,
-  FileSignature,
   FolderOpen,
   Minus,
   Plus,
   Search,
+  ShieldCheck,
   X,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/IconButton";
 import { cn, modLabel } from "@/lib/utils";
 
 type Props = {
@@ -55,121 +55,120 @@ export function Toolbar({
   onSearchChange,
 }: Props) {
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line bg-sheet/90 px-3 backdrop-blur">
-      <div className="flex items-center gap-2">
-        <img src="/folio.svg" alt="" className="h-7 w-7 rounded-md" />
-        <span className="hidden text-sm font-semibold tracking-tight sm:inline">Folio</span>
+    <header className="titlebar flex h-10 shrink-0 items-center gap-2 px-2.5">
+      <div className="flex w-[28%] min-w-0 items-center gap-1.5">
+        <img src="/folio.svg" alt="" className="h-5 w-5 rounded-[5px]" />
+        <IconButton onClick={onOpen} title={`Abrir (${modLabel()}+O)`}>
+          <FolderOpen className="h-3.5 w-3.5" />
+        </IconButton>
+        {fileName && (
+          <IconButton onClick={onClose} title="Fechar">
+            <X className="h-3.5 w-3.5" />
+          </IconButton>
+        )}
       </div>
 
-      <Button variant="ghost" size="sm" onClick={onOpen} title={`${modLabel()}+O`}>
-        <FolderOpen className="h-4 w-4" />
-        <span className="hidden sm:inline">Abrir</span>
-      </Button>
-
-      <div className="min-w-0 flex-1 truncate px-2 text-center text-[13px] text-muted">
-        {loading ? "A abrir…" : fileName ?? "Nenhum documento"}
+      <div className="min-w-0 flex-1 truncate text-center text-[13px] font-medium tracking-tight text-ink">
+        {loading ? "A abrir…" : fileName ?? "Folio"}
       </div>
 
-      {fileName && (
-        <>
-          <div className="hidden items-center gap-1 md:flex">
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => onPage(page - 1)}
-              disabled={page <= 1}
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <form
-              className="flex items-center gap-1 text-[13px] text-muted"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const input = e.currentTarget.elements.namedItem("page") as HTMLInputElement;
-                onPage(Number(input.value));
-              }}
-            >
-              <input
-                key={page}
-                name="page"
-                defaultValue={page}
-                className="h-7 w-10 rounded border border-line bg-paper text-center text-ink"
-              />
-              <span>/ {pageCount}</span>
-            </form>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => onPage(page + 1)}
-              disabled={page >= pageCount}
-            >
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-
-          <div className="flex items-center gap-0.5">
-            <Button variant="ghost" size="icon" onClick={() => onZoom(zoom - 0.1)}>
-              <Minus className="h-4 w-4" />
-            </Button>
-            <button
-              type="button"
-              onClick={onFitWidth}
-              className="h-8 min-w-12 rounded-md px-1 text-[12px] text-muted hover:bg-ink/6"
-              title="Ajustar à largura"
-            >
-              {Math.round(zoom * 100)}%
-            </button>
-            <Button variant="ghost" size="icon" onClick={() => onZoom(zoom + 0.1)}>
-              <Plus className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" size="sm" className="hidden lg:inline-flex" onClick={onFitPage}>
-              Página
-            </Button>
-          </div>
-
-          {searchOpen ? (
-            <div className="flex h-8 items-center gap-1 rounded-md border border-line bg-paper px-2">
-              <Search className="h-3.5 w-3.5 text-muted" />
-              <input
-                autoFocus
-                value={search}
-                onChange={(e) => onSearchChange(e.target.value)}
-                placeholder="Buscar no texto"
-                className="w-28 bg-transparent text-[13px] outline-none sm:w-40"
-              />
-              {search && (
-                <span className="text-[11px] text-muted">
-                  {searchHits} pág.
-                </span>
-              )}
-              <button type="button" onClick={onToggleSearch}>
-                <X className="h-3.5 w-3.5 text-muted" />
-              </button>
+      <div className="flex w-[36%] min-w-0 items-center justify-end gap-1.5">
+        {fileName ? (
+          <>
+            <div className="seg hidden sm:flex">
+              <IconButton disabled={page <= 1} onClick={() => onPage(page - 1)} title="Página anterior">
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </IconButton>
+              <form
+                className="flex h-6 items-center px-1 text-[11px] tabular-nums text-quiet"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const input = e.currentTarget.elements.namedItem("page") as HTMLInputElement;
+                  onPage(Number(input.value));
+                }}
+              >
+                <input
+                  key={page}
+                  name="page"
+                  defaultValue={page}
+                  className="h-5 w-7 rounded bg-transparent text-center text-ink outline-none"
+                />
+                <span>/ {pageCount}</span>
+              </form>
+              <IconButton
+                disabled={page >= pageCount}
+                onClick={() => onPage(page + 1)}
+                title="Página seguinte"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </IconButton>
             </div>
-          ) : (
-            <Button variant="ghost" size="icon" onClick={onToggleSearch} title={`${modLabel()}+F`}>
-              <Search className="h-4 w-4" />
-            </Button>
-          )}
 
-          <Button
-            variant={signaturesOpen ? "outline" : "ghost"}
-            size="sm"
-            onClick={onToggleSignatures}
-            className={cn(signatureCount > 0 && "text-teal")}
-            title={`${modLabel()}+I`}
+            <div className="seg hidden md:flex">
+              <IconButton onClick={() => onZoom(zoom - 0.1)} title="Reduzir">
+                <Minus className="h-3.5 w-3.5" />
+              </IconButton>
+              <button
+                type="button"
+                onClick={onFitWidth}
+                onDoubleClick={onFitPage}
+                title="Ajustar à largura · duplo clique: página"
+                className="h-6 min-w-10 px-1 text-[11px] tabular-nums text-quiet hover:text-ink"
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+              <IconButton onClick={() => onZoom(zoom + 0.1)} title="Ampliar">
+                <Plus className="h-3.5 w-3.5" />
+              </IconButton>
+            </div>
+
+            {searchOpen ? (
+              <div className="flex h-7 items-center gap-1 rounded-md bg-black/5 px-2">
+                <Search className="h-3.5 w-3.5 text-quiet" />
+                <input
+                  autoFocus
+                  value={search}
+                  onChange={(e) => onSearchChange(e.target.value)}
+                  placeholder="Buscar"
+                  className="w-24 bg-transparent text-[12px] outline-none sm:w-36"
+                />
+                {search ? (
+                  <span className="text-[10px] text-quiet">{searchHits}</span>
+                ) : null}
+                <button type="button" onClick={onToggleSearch} className="text-quiet">
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ) : (
+              <IconButton onClick={onToggleSearch} title={`Buscar (${modLabel()}+F)`}>
+                <Search className="h-3.5 w-3.5" />
+              </IconButton>
+            )}
+
+            <IconButton
+              active={signaturesOpen}
+              onClick={onToggleSignatures}
+              title={`Assinaturas (${modLabel()}+I)`}
+              className={cn(signatureCount > 0 && "text-mark")}
+            >
+              <span className="relative">
+                <ShieldCheck className="h-3.5 w-3.5" />
+                {signatureCount > 0 && (
+                  <span className="absolute -right-1.5 -top-1 h-1.5 w-1.5 rounded-full bg-mark" />
+                )}
+              </span>
+            </IconButton>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="h-7 rounded-md px-2.5 text-[12px] font-medium text-ink hover:bg-black/6"
           >
-            <FileSignature className="h-4 w-4" />
-            <span className="hidden sm:inline">
-              {signatureCount > 0 ? `${signatureCount} assinatura${signatureCount > 1 ? "s" : ""}` : "Assinaturas"}
-            </span>
-          </Button>
-
-          <Button variant="ghost" size="icon" onClick={onClose} title="Fechar documento">
-            <X className="h-4 w-4" />
-          </Button>
-        </>
-      )}
+            Abrir
+          </button>
+        )}
+      </div>
     </header>
   );
 }
