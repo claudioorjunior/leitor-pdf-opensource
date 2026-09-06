@@ -5,7 +5,6 @@ import { Toolbar } from "@/components/Toolbar";
 import { Viewer } from "@/components/Viewer";
 import { loadPdf, searchDocument, type PdfDocument } from "@/lib/pdf";
 import { inspectSignatures, type SignatureInfo } from "@/lib/signatures";
-import { formatBytes } from "@/lib/utils";
 
 type OpenDoc = {
   name: string;
@@ -43,6 +42,7 @@ export default function App() {
     try {
       const pdf = await loadPdf(bytes);
       setDoc({ name, size: bytes.byteLength, bytes, pdf });
+      document.title = `${name} — Folio`;
       setPage(1);
       setFit("width");
       setSearch("");
@@ -170,7 +170,7 @@ export default function App() {
 
   return (
     <div
-      className="flex h-full flex-col bg-paper"
+      className="app-shell flex h-full flex-col"
       onDragOver={(e) => {
         e.preventDefault();
         setDragging(true);
@@ -213,6 +213,7 @@ export default function App() {
         onClose={() => {
           void doc?.pdf.cleanup();
           setDoc(null);
+          document.title = "Folio";
           setSignatures([]);
           setError(null);
           setSignaturesOpen(false);
@@ -236,7 +237,7 @@ export default function App() {
       <div className="flex min-h-0 flex-1">
         <main className="relative min-w-0 flex-1">
           {error && (
-            <div className="absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-lg bg-[#f4d6d4] px-4 py-2 text-sm text-danger shadow">
+            <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-md bg-[#1c1c1c] px-3 py-1.5 text-[12px] text-white shadow-lg">
               {error}
             </div>
           )}
@@ -253,22 +254,14 @@ export default function App() {
           )}
         </main>
         {doc && signaturesOpen && (
-          <SignaturePanel signatures={signatures} loading={sigLoading} error={sigError} />
+          <SignaturePanel
+            signatures={signatures}
+            loading={sigLoading}
+            error={sigError}
+            onClose={() => setSignaturesOpen(false)}
+          />
         )}
       </div>
-
-      {doc && (
-        <footer className="flex h-8 shrink-0 items-center justify-between border-t border-line bg-sheet px-3 text-[11px] text-muted">
-          <span>
-            {doc.pdf.numPages} página{doc.pdf.numPages === 1 ? "" : "s"} · {formatBytes(doc.size)}
-          </span>
-          <span className="hidden sm:inline">
-            {signatures.length > 0
-              ? `${signatures.length} assinatura${signatures.length > 1 ? "s" : ""} digital${signatures.length > 1 ? "is" : ""}`
-              : "Sem assinatura digital"}
-          </span>
-        </footer>
-      )}
     </div>
   );
 }

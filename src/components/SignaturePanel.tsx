@@ -1,76 +1,66 @@
-import { Badge } from "@/components/ui/badge";
+import { ShieldAlert, ShieldCheck, ShieldQuestion, X } from "lucide-react";
+import { IconButton } from "@/components/IconButton";
 import { statusLabel, type SignatureInfo } from "@/lib/signatures";
-import { ShieldAlert, ShieldCheck, ShieldQuestion } from "lucide-react";
 
 type Props = {
   signatures: SignatureInfo[];
   loading: boolean;
   error: string | null;
+  onClose: () => void;
 };
 
-export function SignaturePanel({ signatures, loading, error }: Props) {
+export function SignaturePanel({ signatures, loading, error, onClose }: Props) {
   return (
-    <aside className="flex h-full w-full max-w-full flex-col border-l border-line bg-sheet sm:w-[340px]">
-      <div className="border-b border-line px-4 py-3">
-        <p className="text-[11px] font-semibold tracking-[0.14em] text-teal">
-          ASSINATURAS DIGITAIS
-        </p>
-        <h2 className="mt-1 text-base font-semibold">Integridade do arquivo</h2>
-        <p className="mt-1 text-xs leading-5 text-muted">
-          O Folio lê o dicionário /Sig, o PKCS#7 e o intervalo de bytes. A
-          criptografia é conferida no motor Rust (e também neste visor).
-        </p>
+    <aside className="sig-dock flex h-full w-[300px] shrink-0 flex-col border-l border-hairline bg-chrome">
+      <div className="flex h-10 items-center justify-between px-3">
+        <p className="text-[12px] font-semibold tracking-tight">Assinaturas</p>
+        <IconButton onClick={onClose} title="Fechar painel">
+          <X className="h-3.5 w-3.5" />
+        </IconButton>
       </div>
-      <div className="flex-1 space-y-3 overflow-auto p-3 scrollbar-thin">
-        {loading && (
-          <p className="px-1 py-6 text-center text-sm text-muted">A verificar assinaturas…</p>
-        )}
-        {error && (
-          <p className="rounded-lg bg-[#f4d6d4] px-3 py-2 text-sm text-danger">{error}</p>
-        )}
+      <div className="flex-1 overflow-auto px-3 pb-4 scrollbar-thin">
+        {loading && <p className="py-8 text-center text-[12px] text-quiet">A verificar…</p>}
+        {error && <p className="text-[12px] leading-5 text-bad">{error}</p>}
         {!loading && !error && signatures.length === 0 && (
-          <div className="rounded-xl border border-line bg-paper px-4 py-8 text-center">
-            <ShieldQuestion className="mx-auto h-8 w-8 text-muted" />
-            <p className="mt-3 text-sm font-medium">Nenhuma assinatura</p>
-            <p className="mt-1 text-xs leading-5 text-muted">
-              Este PDF não contém um campo de assinatura digital. O conteúdo
-              ainda pode ser lido normalmente.
+          <div className="px-1 py-6 text-center">
+            <ShieldQuestion className="mx-auto h-6 w-6 text-quiet" />
+            <p className="mt-2 text-[13px] font-medium">Nenhuma assinatura</p>
+            <p className="mt-1 text-[12px] leading-5 text-quiet">
+              Este arquivo não traz um campo de assinatura digital.
             </p>
           </div>
         )}
         {signatures.map((sig) => (
-          <article key={sig.id} className="rounded-xl border border-line bg-paper p-3">
+          <article key={sig.id} className="mb-3 rounded-lg bg-white/70 p-3 shadow-[0_0_0_1px_rgb(0_0_0/0.06)]">
             <div className="flex items-start gap-2">
               <StatusIcon status={sig.status} />
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold">
-                  {sig.signerName || sig.certificate?.commonName || "Signatário desconhecido"}
+              <div className="min-w-0">
+                <p className="truncate text-[13px] font-semibold leading-5">
+                  {sig.signerName || sig.certificate?.commonName || "Signatário"}
                 </p>
-                <Badge tone={toneFor(sig.status)} className="mt-1">
+                <p className={`text-[11px] font-medium ${statusClass(sig.status)}`}>
                   {statusLabel(sig.status)}
-                </Badge>
+                </p>
               </div>
             </div>
-            <p className="mt-3 text-[13px] leading-5 text-ink/80">{sig.statusDetail}</p>
-            <dl className="mt-3 space-y-1.5 text-[12px]">
-              <Row label="Campo" value={sig.fieldName} />
+            <p className="mt-2 text-[12px] leading-5 text-quiet">{sig.statusDetail}</p>
+            <dl className="mt-3 space-y-2 border-t border-hairline pt-3">
               <Row label="Motivo" value={sig.reason} />
               <Row label="Local" value={sig.location} />
-              <Row label="Contacto" value={sig.contactInfo} />
-              <Row label="Data" value={sig.signingTime} />
-              <Row label="Filtro" value={sig.subFilter || sig.filter} />
-              <Row label="Resumo" value={sig.digestAlgorithm} />
-              <Row label="Cobre o ficheiro" value={sig.coversWholeDocument ? "Sim" : "Não"} />
+              <Row label="Quando" value={sig.signingTime} />
+              <Row label="Campo" value={sig.fieldName} />
+              <Row
+                label="Cobertura"
+                value={sig.coversWholeDocument ? "Documento inteiro" : "Parcial"}
+              />
+              <Row label="Algoritmo" value={sig.digestAlgorithm} />
               {sig.certificate && (
                 <>
                   <Row label="Organização" value={sig.certificate.organization} />
-                  <Row label="Emissor" value={sig.certificate.issuer} />
                   <Row
                     label="Certificado"
                     value={
-                      sig.certificate.isSelfSigned
-                        ? "Autoassinado (demonstração)"
-                        : "Cadeia presente"
+                      sig.certificate.isSelfSigned ? "Autoassinado" : "Com emissor"
                     }
                   />
                 </>
@@ -86,28 +76,29 @@ export function SignaturePanel({ signatures, loading, error }: Props) {
 function Row({ label, value }: { label: string; value?: string | null }) {
   if (!value) return null;
   return (
-    <div className="flex gap-2">
-      <dt className="w-24 shrink-0 text-muted">{label}</dt>
-      <dd className="min-w-0 break-words text-ink">{value}</dd>
+    <div>
+      <dt className="text-[10px] uppercase tracking-[0.08em] text-quiet">{label}</dt>
+      <dd className="mt-0.5 break-words text-[12px] leading-4">{value}</dd>
     </div>
   );
 }
 
-function toneFor(status: SignatureInfo["status"]) {
-  if (status === "valid") return "ok" as const;
-  if (status === "intactButUntrusted") return "warn" as const;
+function statusClass(status: SignatureInfo["status"]) {
+  if (status === "valid") return "text-good";
+  if (status === "intactButUntrusted") return "text-caution";
   if (status === "documentModified" || status === "invalid" || status === "certificateExpired") {
-    return "bad" as const;
+    return "text-bad";
   }
-  return "muted" as const;
+  return "text-quiet";
 }
 
 function StatusIcon({ status }: { status: SignatureInfo["status"] }) {
+  const cls = "mt-0.5 h-4 w-4 shrink-0";
   if (status === "valid" || status === "intactButUntrusted") {
-    return <ShieldCheck className="mt-0.5 h-5 w-5 text-teal" />;
+    return <ShieldCheck className={`${cls} text-good`} />;
   }
   if (status === "documentModified" || status === "invalid") {
-    return <ShieldAlert className="mt-0.5 h-5 w-5 text-danger" />;
+    return <ShieldAlert className={`${cls} text-bad`} />;
   }
-  return <ShieldQuestion className="mt-0.5 h-5 w-5 text-muted" />;
+  return <ShieldQuestion className={`${cls} text-quiet`} />;
 }

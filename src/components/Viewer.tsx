@@ -68,11 +68,11 @@ export function Viewer({ doc, scale, currentPage, search, onPageVisible, scrollN
   return (
     <div ref={scroller} className="h-full overflow-auto scrollbar-thin">
       <div
-        className="mx-auto flex flex-col items-center gap-6 py-6"
-        style={{ width: Math.max(width + 48, 320) }}
+        className="mx-auto flex flex-col items-center gap-7 py-8 pb-16"
+        style={{ width: Math.max(width + 64, 280) }}
       >
         {pages.length === 0 && (
-          <div className="mt-20 text-sm text-muted">A preparar as páginas…</div>
+          <div className="mt-24 text-[13px] text-quiet">A montar as páginas…</div>
         )}
         {pages.map((page, index) => (
           <PdfPageView
