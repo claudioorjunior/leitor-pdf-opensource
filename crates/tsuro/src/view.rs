@@ -98,6 +98,22 @@ fn open_button() -> Element<'static, Message> {
     )
 }
 
+fn signatures_toggle(ready: &Ready) -> Element<'_, Message> {
+    let count = ready.signatures.signatures.len();
+    tip(
+        control_active(
+            button(
+                row![icon!("shield-check"), text(format!("{count}")).size(13)]
+                    .spacing(4)
+                    .align_y(Alignment::Center),
+            )
+            .on_press(Message::ToggleSignatures),
+            ready.signatures_open,
+        ),
+        "Assinaturas",
+    )
+}
+
 pub fn chrome(session: &Session) -> Element<'_, Message> {
     let body: Element<'_, Message> = match session {
         Session::Empty => empty_drop(),
@@ -175,6 +191,7 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
         if ready.selection_plain_text().is_some() {
             bar = bar.push(control(button("Copiar").on_press(Message::CopySelection)));
         }
+        bar = bar.push(signatures_toggle(ready));
     }
 
     bar.into()
@@ -198,10 +215,11 @@ fn empty_drop() -> Element<'static, Message> {
 }
 
 fn ready_body(ready: &Ready) -> Element<'_, Message> {
-    row![page_pane(ready), signatures_panel(ready)]
-        .spacing(12)
-        .height(Length::Fill)
-        .into()
+    let mut panes = row![page_pane(ready)].spacing(12).height(Length::Fill);
+    if ready.signatures_open {
+        panes = panes.push(signatures_panel(ready));
+    }
+    panes.into()
 }
 
 fn page_pane(ready: &Ready) -> Element<'_, Message> {
