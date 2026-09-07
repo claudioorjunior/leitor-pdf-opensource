@@ -25,6 +25,8 @@ pub struct ParsedCms {
     pub signature_algorithm: &'static str,
     pub signature: Vec<u8>,
     pub signed_attrs_for_verify: Option<Vec<u8>>,
+    pub cert_not_before: Option<i64>,
+    pub cert_not_after: Option<i64>,
 }
 
 pub fn parse_signed_data(pkcs7: &[u8]) -> Result<ParsedCms, SigError> {
@@ -97,9 +99,9 @@ pub fn parse_signed_data(pkcs7: &[u8]) -> Result<ParsedCms, SigError> {
     expect_tag(si[cursor], 0x04, "signature")?;
     let signature = si[cursor].value.to_vec();
 
-    let (certificate, public_key) = match certs_blob {
+    let (certificate, public_key, cert_not_before, cert_not_after) = match certs_blob {
         Some(blob) => parse_first_cert(blob),
-        None => (None, None),
+        None => (None, None, None, None),
     };
 
     Ok(ParsedCms {
@@ -110,10 +112,19 @@ pub fn parse_signed_data(pkcs7: &[u8]) -> Result<ParsedCms, SigError> {
         signature_algorithm,
         signature,
         signed_attrs_for_verify,
+        cert_not_before,
+        cert_not_after,
     })
 }
 
-fn parse_first_cert(mut data: &[u8]) -> (Option<CertificateInfo>, Option<RsaPublicKey>) {
+fn parse_first_cert(
+    mut data: &[u8],
+) -> (
+    Option<CertificateInfo>,
+    Option<RsaPublicKey>,
+    Option<i64>,
+    Option<i64>,
+) {
     while !data.is_empty() {
         let Ok((tlv, rest)) = read_tlv(data) else {
             break;
@@ -154,9 +165,14 @@ fn parse_first_cert(mut data: &[u8]) -> (Option<CertificateInfo>, Option<RsaPubl
             .ok(),
             _ => None,
         };
-        return (Some(info), key);
+        return (
+            Some(info),
+            key,
+            Some(cert.validity().not_before.timestamp()),
+            Some(cert.validity().not_after.timestamp()),
+        );
     }
-    (None, None)
+    (None, None, None, None)
 }
 
 fn extract_message_digest(attrs_blob: &[u8]) -> Result<Option<Vec<u8>>, SigError> {
