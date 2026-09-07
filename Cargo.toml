@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/folio-sign", "src-tauri"]
+members = ["crates/tsuro-sign", "crates/tsuro", "src-tauri"]
 resolver = "2"
 
 [workspace.package]

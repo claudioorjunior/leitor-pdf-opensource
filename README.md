@@ -1,54 +1,89 @@
-# Folio
+# Tsuro
 
-Leitor de PDF de código aberto para **macOS** e **Windows**. Leve, fiel à tipografia e capaz de reconhecer assinaturas digitais.
+Tsuro abre e lê qualquer PDF sem travar. Completo, neste produto, é ler sem travar. Não é uma suíte.
 
-Folio não é uma suíte. Não pede conta, não envia o arquivo para a nuvem e não tenta editar o documento. Abre o PDF, desenha cada página no lugar certo, deixa copiar o texto e diz se a assinatura criptográfica ainda cobre o arquivo.
+A marca é um tsuru de três dobras.
 
-## Por que Rust
+![Marca Tsuro](public/tsuro-mark.png)
 
-O visor usa uma casca nativa [Tauri](https://tauri.app/) (WebView do sistema, não Electron). O reconhecimento e a verificação das assinaturas vivem num crate Rust puro, `folio-sign`:
+Ainda não há seleção para anotar, destaque nem notas adesivas. Gravação automática na nuvem fica bem mais tarde.
+
+## Repositório
+
+O canônico fica no Cursor Origin. O GitHub é o espelho público.
+
+Clone pelo Origin (preferido):
+
+```bash
+git clone https://origin.cursor.com/claudioorjunior/leitor-pdf-opensource.git
+```
+
+Com a CLI do Origin:
+
+```bash
+origin repo clone claudioorjunior/leitor-pdf-opensource
+```
+
+Clone pelo espelho no GitHub:
+
+```bash
+git clone https://github.com/claudioorjunior/leitor-pdf-opensource.git
+```
+
+Remotes locais típicos: `origin` (Cursor) e `github` (GitHub). Ao publicar, empurre os dois: `git push origin HEAD` e `git push github HEAD`.
+
+## Assinaturas (`tsuro-sign`)
+
+O reconhecimento e a verificação das assinaturas vivem no crate Rust `tsuro-sign`:
 
 - percorre AcroForm e dicionários `/Sig`
 - lê o PKCS#7/CMS (perfil `adbe.pkcs7.detached`)
 - confere o `ByteRange` e o `messageDigest`
 - verifica RSA + SHA-256 sobre os atributos assinados
 
-A renderização das páginas usa [PDF.js](https://mozilla.github.io/pdf.js/) 6, com camada de texto alinhada aos glifos — acentos portugueses, cifras e seleção de texto caem no sítio certo.
+## Visor nativo
+
+O visor nativo em construção é o crate `tsuro` (iced + PDFium). Precisa da biblioteca Pdfium no cwd ou no sistema.
+
+```bash
+cargo test -p tsuro-sign
+cargo run -p tsuro -- public/samples/guia-folio.pdf
+```
 
 ## Requisitos
 
-- Node.js 22+
 - Rust 1.85+ (`rustup default stable`)
-- Para o app nativo: pré-requisitos do [Tauri 2](https://v2.tauri.app/start/prerequisites/) no seu sistema
+- Pdfium no cwd ou no sistema, para o crate `tsuro`
+- Node.js 22+ só se você for mexer no legado Tauri
 
-## Desenvolvimento
+## Legado (Tauri e PDF.js)
+
+A casca [Tauri](https://tauri.app/) e o visor React + [PDF.js](https://mozilla.github.io/pdf.js/) 6 continuam no repositório. Eles não são o produto.
 
 ```bash
 npm install
-npm run test:sign    # testes do motor de assinaturas
-npm run dev          # visor no navegador (http://127.0.0.1:43177)
-```
-
-App nativo:
-
-```bash
+npm run test:sign
+npm run dev          # visor legado no navegador (http://127.0.0.1:43177)
 npm run tauri dev
-```
-
-Pacotes de instalação:
-
-```bash
 npm run tauri build
 ```
 
-No macOS gera `.app` / `.dmg`. No Windows, instalador NSIS / MSI.
+No macOS o legado gera `.app` / `.dmg`. No Windows, instalador NSIS / MSI.
 
 ## Uso
 
-- **Abrir** — botão, arrastar o arquivo, ou `⌘/Ctrl+O`
-- **Zoom** — `⌘/Ctrl +` e `−`; `⌘/Ctrl+0` ajusta à largura
-- **Busca** — `⌘/Ctrl+F` percorre o texto extraído de cada página
-- **Assinaturas** — `⌘/Ctrl+I` abre o painel com signatário, motivo, cobertura do arquivo e estado criptográfico
+A janela nativa é o crate `tsuro`. Os controles estão na barra, não em atalhos de teclado.
+
+- **Abrir.** Botão, ou arrastar o arquivo para a janela.
+- **Fechar.** Fecha o documento aberto.
+- **Anterior / Próxima.** Troca de página. A barra mostra Página N / total.
+- **Ajustar à largura.** Encaixa a página na largura da janela.
+- **Página.** Encaixa a página inteira na janela.
+- **+ / −.** Zoom manual. A barra mostra a porcentagem.
+- **Buscar.** Campo na barra. Conta as ocorrências no texto extraído.
+- **Assinaturas.** Painel à direita. Signatário e estado criptográfico.
+
+O legado Tauri e PDF.js continua no repositório. Não é o produto. A marca do legado também é Tsuro.
 
 Há dois PDFs de exemplo em `public/samples/`:
 
@@ -57,19 +92,21 @@ Há dois PDFs de exemplo em `public/samples/`:
 | `guia-folio.pdf` | Tipografia, tabela, acentos, busca |
 | `contrato-assinado.pdf` | Campo `/Sig` com certificado autoassinado de demonstração |
 
-O certificado do contrato é **autoassinado**. O Folio trata isso como assinatura criptograficamente íntegra, mas sem cadeia de confiança pública — o estado esperado é “íntegra (sem confiança pública)”.
+O certificado do contrato é **autoassinado**. Tsuro trata isso como assinatura criptograficamente íntegra, mas sem cadeia de confiança pública. O estado esperado é “íntegra (sem confiança pública)”.
 
 ## Arquitetura
 
 ```
-crates/folio-sign   motor Rust (PDF + CMS)
-src-tauri           app Tauri (macOS / Windows / Linux)
-src                 visor React + PDF.js
-public/samples      documentos de exemplo
+crates/tsuro            visor nativo (iced + PDFium)
+crates/tsuro-sign       motor Rust (PDF + CMS)
+src-tauri               legado Tauri
+src                     legado React + PDF.js
+public/tsuro-mark.png   marca (tsuru de três dobras)
+public/samples          documentos de exemplo
 ```
 
-O visor web funciona sozinho (útil para desenvolver a leitura). No binário nativo, a verificação CMS passa pelo crate Rust via comando Tauri.
+O visor web legado funciona sozinho. No binário Tauri, a verificação CMS passa pelo crate Rust via comando Tauri.
 
 ## Licença
 
-MIT. Contribuições de leitura, verificação e empacotamento são bem-vindas — o Folio pretende continuar pequeno.
+MIT. Contribuições de leitura, verificação e empacotamento são bem-vindas. Tsuro pretende continuar pequeno.

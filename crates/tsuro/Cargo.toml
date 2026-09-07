@@ -1,0 +1,18 @@
+[package]
+name = "tsuro"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Tsuro, leitor de PDF nativo (iced)"
+
+[[bin]]
+name = "tsuro"
+path = "src/main.rs"
+
+[dependencies]
+tsuro-sign = { path = "../tsuro-sign" }
+iced = { version = "0.13", features = ["image", "tokio"] }
+pdfium-render = "0.8"
+rfd = "0.15"
+thiserror = "2"
+unicode-normalization = "0.1"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Folio sample PDFs: a formatted reading sample and a signed contract."""
+"""Generate Tsuro sample PDFs: a formatted reading sample and a signed contract."""
 
 from __future__ import annotations
 
@@ -187,7 +187,7 @@ def header_footer(canvas, doc, *, mark: str, running: str) -> None:
     canvas.line(22 * mm, 16 * mm, width - 22 * mm, 16 * mm)
     canvas.setFillColor(MUTED)
     canvas.setFont("Inter", 8)
-    canvas.drawString(22 * mm, 11 * mm, "Folio · leitor de PDF de código aberto")
+    canvas.drawString(22 * mm, 11 * mm, "Tsuro · leitor de PDF de código aberto")
     canvas.drawRightString(width - 22 * mm, 11 * mm, f"{doc.page}")
     canvas.restoreState()
 
@@ -202,21 +202,21 @@ def build_guide(path: Path) -> None:
         rightMargin=22 * mm,
         topMargin=24 * mm,
         bottomMargin=22 * mm,
-        title="Como o Folio lê um PDF",
-        author="Folio",
+        title="Como o Tsuro lê um PDF",
+        author="Tsuro",
         subject="Documento de exemplo com formatação de texto",
     )
 
     story = [
         Paragraph("DOCUMENTO DE EXEMPLO", s["kicker"]),
-        Paragraph("Como o Folio lê um PDF", s["title"]),
+        Paragraph("Como o Tsuro lê um PDF", s["title"]),
         Paragraph(
             "Um leitor deve desaparecer. O que importa é o texto, as figuras, "
             "as notas e — quando houver — a assinatura que garante autoria.",
             s["subtitle"],
         ),
         Paragraph(
-            "Este arquivo existe para testar o Folio: tipografia com serifa, "
+            "Este arquivo existe para testar o Tsuro: tipografia com serifa, "
             "parágrafos justificados, listas, uma tabela e um índice interno. "
             "Se a leitura estiver nítida, a seleção de texto coincidir com o "
             "que você vê e a navegação for imediata, o leitor está cumprindo "
@@ -228,7 +228,7 @@ def build_guide(path: Path) -> None:
             "A maior parte dos visores de PDF ou pesa demais, ou erra o básico. "
             "Fontes substitutas deformam o ritmo da linha. Camadas de texto "
             "desencontradas impedem copiar um trecho. Assinaturas digitais "
-            "viram um carimbo decorativo, sem verificação. Folio nasce no "
+            "viram um carimbo decorativo, sem verificação. Tsuro nasce no "
             "sentido oposto: um app nativo para macOS e Windows, escrito em "
             "Rust, que abre o arquivo, desenha cada página com fidelidade e "
             "explica o estado criptográfico da assinatura — se ela existir.",
@@ -244,7 +244,7 @@ def build_guide(path: Path) -> None:
                 ListItem(
                     Paragraph(
                         "<b>Renderização fiel.</b> Cada glifo, espaço e acento "
-                        "português precisa cair no lugar certo. O Folio usa o "
+                        "português precisa cair no lugar certo. O Tsuro usa o "
                         "motor PDF.js sobre uma casca nativa em Tauri.",
                         s["body"],
                     ),
@@ -260,7 +260,7 @@ def build_guide(path: Path) -> None:
                 ),
                 ListItem(
                     Paragraph(
-                        "<b>Assinaturas digitais.</b> O Folio localiza o dicionário "
+                        "<b>Assinaturas digitais.</b> O Tsuro localiza o dicionário "
                         "de assinatura, lê o PKCS#7, confere o intervalo de bytes "
                         "e verifica a criptografia no motor Rust.",
                         s["body"],
@@ -348,14 +348,14 @@ def build_guide(path: Path) -> None:
             Paragraph(
                 "Outra linha, agora com itálico e ênfase: <i>quem lê um contrato "
                 "precisa confiar no desenho da página tanto quanto no texto</i>. "
-                "A camada de texto do Folio fica invisível sobre o canvas, alinhada "
+                "A camada de texto do Tsuro fica invisível sobre o canvas, alinhada "
                 "ao glifo, para que copiar e buscar encontrem a palavra certa.",
                 s["body"],
             ),
             Paragraph("Busca e índice", s["h2"]),
             Paragraph(
                 "Use ⌘F ou Ctrl+F e procure por “assinatura”, “Niterói” ou “12%”. "
-                "O Folio percorre o conteúdo extraído de cada página, não uma "
+                "O Tsuro percorre o conteúdo extraído de cada página, não uma "
                 "OCR improvisada. Em documentos digitais nativos, o resultado "
                 "deve ser imediato e completo.",
                 s["body"],
@@ -363,12 +363,12 @@ def build_guide(path: Path) -> None:
             Paragraph(
                 "Este guia não traz assinatura digital. Para isso, abra o outro "
                 "exemplo, <b>contrato-assinado.pdf</b>, e abra o painel de "
-                "assinaturas. Lá o Folio deve mostrar a signatária, o motivo, "
+                "assinaturas. Lá o Tsuro deve mostrar a signatária, o motivo, "
                 "a data, se o intervalo de bytes cobre o arquivo e se a "
                 "criptografia PKCS#7 confere.",
                 s["body"],
             ),
-            Paragraph("O que Folio deliberadamente não é", s["h2"]),
+            Paragraph("O que Tsuro deliberadamente não é", s["h2"]),
             Paragraph(
                 "Não é editor. Não é suíte corporativa. Não pede cadastro. "
                 "A primeira versão lê, busca, navega e verifica assinaturas. "
@@ -377,14 +377,14 @@ def build_guide(path: Path) -> None:
                 s["body"],
             ),
             Spacer(1, 18),
-            Paragraph("Fim do documento de exemplo · Folio 0.1", s["center"]),
+            Paragraph("Fim do documento de exemplo · Tsuro 0.1", s["center"]),
         ]
     )
 
     doc.build(
         story,
-        onFirstPage=lambda c, d: header_footer(c, d, mark="Folio", running="Guia de leitura"),
-        onLaterPages=lambda c, d: header_footer(c, d, mark="Folio", running="Guia de leitura"),
+        onFirstPage=lambda c, d: header_footer(c, d, mark="Tsuro", running="Guia de leitura"),
+        onLaterPages=lambda c, d: header_footer(c, d, mark="Tsuro", running="Guia de leitura"),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(buf.getvalue())
@@ -401,16 +401,16 @@ def build_contract(path: Path) -> None:
         rightMargin=22 * mm,
         topMargin=24 * mm,
         bottomMargin=36 * mm,
-        title="Contrato de licença de uso — Folio Exemplos",
-        author="Folio Exemplos Ltda",
+        title="Contrato de licença de uso — Tsuro Exemplos",
+        author="Tsuro Exemplos Ltda",
         subject="Contrato assinado digitalmente",
     )
     story = [
         Paragraph("CONTRATO Nº 2026-091", s["kicker"]),
-        Paragraph("Termo de licença de uso do software Folio", s["title"]),
+        Paragraph("Termo de licença de uso do software Tsuro", s["title"]),
         Paragraph("Documento assinado digitalmente para demonstração do leitor.", s["subtitle"]),
         Paragraph(
-            "Pelo presente instrumento, de um lado <b>Folio Exemplos Ltda</b>, "
+            "Pelo presente instrumento, de um lado <b>Tsuro Exemplos Ltda</b>, "
             "inscrita no CNPJ sob o nº 00.000.000/0001-91, com sede em São Paulo/SP, "
             "doravante LICENCIANTE, e de outro lado a pessoa identificada no "
             "certificado digital aposto ao final, doravante LICENCIADA, têm entre "
@@ -420,7 +420,7 @@ def build_contract(path: Path) -> None:
         Paragraph("Cláusula 1 · Objeto", s["h2"]),
         Paragraph(
             "A LICENCIANTE concede à LICENCIADA licença gratuita, perpétua e "
-            "não exclusiva para uso do software Folio, leitor de arquivos PDF "
+            "não exclusiva para uso do software Tsuro, leitor de arquivos PDF "
             "para macOS e Windows, em conformidade com a licença MIT do projeto.",
             s["body"],
         ),
@@ -434,7 +434,7 @@ def build_contract(path: Path) -> None:
         ),
         Paragraph("Cláusula 3 · Privacidade", s["h2"]),
         Paragraph(
-            "O Folio processa o PDF no dispositivo. Este exemplo não envia o "
+            "O Tsuro processa o PDF no dispositivo. Este exemplo não envia o "
             "arquivo a nenhum servidor. Certificados autoassinados, como o "
             "usado neste demonstrativo, não substituem uma autoridade "
             "certificadora de confiança pública.",
@@ -455,7 +455,7 @@ def build_contract(path: Path) -> None:
         Paragraph("Campo de assinatura digital", s["h2"]),
         Paragraph(
             "A signatária abaixo assina com um certificado de demonstração "
-            "(Maria Silva / Folio Exemplos Ltda). O Folio deve reconhecer "
+            "(Maria Silva / Tsuro Exemplos Ltda). O Tsuro deve reconhecer "
             "o dicionário /Sig, exibir o PKCS#7 e confirmar se o documento "
             "permanece íntegro após a aposição da assinatura.",
             s["small"],
@@ -466,8 +466,8 @@ def build_contract(path: Path) -> None:
     ]
     doc.build(
         story,
-        onFirstPage=lambda c, d: header_footer(c, d, mark="Contrato", running="Folio Exemplos Ltda"),
-        onLaterPages=lambda c, d: header_footer(c, d, mark="Contrato", running="Folio Exemplos Ltda"),
+        onFirstPage=lambda c, d: header_footer(c, d, mark="Contrato", running="Tsuro Exemplos Ltda"),
+        onLaterPages=lambda c, d: header_footer(c, d, mark="Contrato", running="Tsuro Exemplos Ltda"),
     )
     path.write_bytes(buf.getvalue())
     print(f"wrote unsigned {path} ({path.stat().st_size} bytes)")
@@ -483,10 +483,10 @@ def issue_demo_cert() -> tuple[Path, Path]:
             x509.NameAttribute(NameOID.COUNTRY_NAME, "BR"),
             x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Sao Paulo"),
             x509.NameAttribute(NameOID.LOCALITY_NAME, "Sao Paulo"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Folio Exemplos Ltda"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Tsuro Exemplos Ltda"),
             x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, "Documentos"),
             x509.NameAttribute(NameOID.COMMON_NAME, "Maria Silva"),
-            x509.NameAttribute(NameOID.EMAIL_ADDRESS, "maria.silva@folio.example"),
+            x509.NameAttribute(NameOID.EMAIL_ADDRESS, "maria.silva@tsuro.example"),
         ]
     )
     now = datetime.now(timezone.utc)
@@ -543,7 +543,7 @@ def sign_contract(src: Path, dst: Path, key_path: Path, cert_path: Path) -> None
             name="Maria Silva",
             reason="Aceite do contrato de demonstração",
             location="São Paulo, Brasil",
-            contact_info="maria.silva@folio.example",
+            contact_info="maria.silva@tsuro.example",
             md_algorithm="sha256",
         )
         pdf_signer = PdfSigner(
