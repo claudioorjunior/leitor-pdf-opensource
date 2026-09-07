@@ -6597,6 +6597,7 @@ dependencies = [
  "pdfium-render",
  "rfd",
  "thiserror 2.0.20",
+ "tokio",
  "tsuro-sign",
  "unicode-normalization",
 ]

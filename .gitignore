@@ -13,6 +13,9 @@ dist-ssr
 *.local
 target
 
+# Native PDF engine (dev convenience: README asks for Pdfium in cwd or system)
+libpdfium.*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
