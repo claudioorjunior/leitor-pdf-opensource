@@ -14,14 +14,14 @@ Tsuro é um leitor nativo para o desktop, escrito em Rust ([iced](https://iced.r
 
 O que ele faz cabe na barra:
 
-- **Abrir** pelo botão ou arrastando o arquivo para a janela
-- **Páginas** — anterior, próxima, e o contador Página N / total
+- **Abrir** pelo ícone da pasta, arrastando o arquivo, ou pelo navegador vazio (pastas e últimos arquivos)
+- **Páginas** — painel de miniaturas, além de anterior, próxima e o contador Página N / total
 - **Zoom** — ajustar à largura, encaixar a página, `+` / `−`
 - **Buscar** no texto extraído, com a conta de ocorrências
-- **Assinaturas** — painel com o signatário e o estado criptográfico
+- **Assinaturas** — painel sob demanda, com o signatário e o estado criptográfico
 - **Copiar** o texto selecionado, quando há seleção
 
-Ainda não há anotação, destaque, notas adesivas nem gravação na nuvem. Isso não é um atraso de roadmap disfarçado: Tsuro pretende continuar pequeno.
+Anotações e marcações fazem parte da missão; ainda não estão no visor. O que fica de fora — e deve continuar de fora — é o resto da suíte: formulários, nuvem, impressão, colaboração, qualquer função que não sirva para ler ou marcar.
 
 ## Instalar (macOS)
 
