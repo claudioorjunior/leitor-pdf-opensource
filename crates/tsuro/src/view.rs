@@ -1,9 +1,73 @@
 use tsuro_sign::SignatureStatus;
 use iced::widget::{button, column, container, image, row, scrollable, text, text_input, Space};
-use iced::{Alignment, Element, Length};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow};
 
 use crate::page::PageNo;
 use crate::session::{Message, Ready, Session, Zoom, ZoomFactor};
+
+fn paper() -> Color {
+    Color::from_rgb8(0xfa, 0xfa, 0xf8)
+}
+
+fn ink() -> Color {
+    Color::from_rgb8(0x1c, 0x1c, 0x1a)
+}
+
+fn line() -> Color {
+    Color::from_rgb8(0xe2, 0xe0, 0xd8)
+}
+
+fn chip() -> Color {
+    Color::from_rgb8(0xee, 0xec, 0xe6)
+}
+
+fn chip_hover() -> Color {
+    Color::from_rgb8(0xe2, 0xe0, 0xd8)
+}
+
+fn chip_press() -> Color {
+    Color::from_rgb8(0xd4, 0xd2, 0xc8)
+}
+
+fn control_style(active: bool) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = if active {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => chip_press(),
+                _ => chip_press(),
+            }
+        } else {
+            match status {
+                button::Status::Hovered => chip_hover(),
+                button::Status::Pressed => chip_press(),
+                _ => chip(),
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: ink(),
+            border: Border {
+                color: line(),
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
+fn control(
+    btn: iced::widget::button::Button<'_, Message>,
+) -> iced::widget::button::Button<'_, Message> {
+    control_active(btn, false)
+}
+
+fn control_active(
+    btn: iced::widget::button::Button<'_, Message>,
+    active: bool,
+) -> iced::widget::button::Button<'_, Message> {
+    btn.padding(Padding::from([7, 8])).style(control_style(active))
+}
 
 pub fn chrome(session: &Session) -> Element<'_, Message> {
     let body: Element<'_, Message> = match session {
@@ -18,18 +82,27 @@ pub fn chrome(session: &Session) -> Element<'_, Message> {
         Session::Ready(ready) => ready_body(ready),
     };
 
-    column![toolbar(session), body]
-        .spacing(8)
-        .padding(12)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+    container(
+        column![toolbar(session), body]
+            .spacing(8)
+            .padding(12)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Background::Color(paper())),
+        text_color: Some(ink()),
+        ..container::Style::default()
+    })
+    .into()
 }
 
 fn toolbar(session: &Session) -> Element<'_, Message> {
     let mut bar = row![
-        button("Abrir").on_press(Message::PickFile),
-        button("Fechar").on_press(Message::Close),
+        control(button("Abrir").on_press(Message::PickFile)),
+        control(button("Fechar").on_press(Message::Close)),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -39,11 +112,17 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
         let idx = ready.visible.index();
         let prev = idx.saturating_sub(1);
         let next = (idx + 1).min(n - 1);
-        bar = bar.push(button("Anterior").on_press(Message::SetPage(PageNo::from_index(prev))));
+        bar = bar.push(control(
+            button("Anterior").on_press(Message::SetPage(PageNo::from_index(prev))),
+        ));
         bar = bar.push(text(format!("Página {} / {n}", idx + 1)));
-        bar = bar.push(button("Próxima").on_press(Message::SetPage(PageNo::from_index(next))));
-        bar = bar.push(button("Ajustar à largura").on_press(Message::SetZoom(Zoom::Width)));
-        bar = bar.push(button("Página").on_press(Message::SetZoom(Zoom::Page)));
+        bar = bar.push(control(
+            button("Próxima").on_press(Message::SetPage(PageNo::from_index(next))),
+        ));
+        bar = bar.push(control(
+            button("Ajustar à largura").on_press(Message::SetZoom(Zoom::Width)),
+        ));
+        bar = bar.push(control(button("Página").on_press(Message::SetZoom(Zoom::Page))));
         let current = match ready.zoom {
             Zoom::Manual(z) => z.get(),
             Zoom::Width | Zoom::Page => ready
@@ -51,13 +130,13 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
                 .scale(ready.viewport(), ready.media(ready.visible))
                 .factor(),
         };
-        bar = bar.push(
+        bar = bar.push(control(
             button("−").on_press(Message::SetZoom(Zoom::Manual(ZoomFactor::new(current / 1.1)))),
-        );
+        ));
         bar = bar.push(text(format!("{:.0}%", current * 100.0)));
-        bar = bar.push(
+        bar = bar.push(control(
             button("+").on_press(Message::SetZoom(Zoom::Manual(ZoomFactor::new(current * 1.1)))),
-        );
+        ));
         bar = bar.push(
             text_input("Buscar", ready.search.query())
                 .on_input(Message::SearchChanged)
@@ -65,7 +144,7 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
         );
         bar = bar.push(text(format!("{} ocorrências", ready.search.hits().len())));
         if ready.selection_plain_text().is_some() {
-            bar = bar.push(button("Copiar").on_press(Message::CopySelection));
+            bar = bar.push(control(button("Copiar").on_press(Message::CopySelection)));
         }
     }
 
@@ -77,7 +156,7 @@ fn empty_drop() -> Element<'static, Message> {
         column![
             text("Abra um PDF").size(22),
             text("Arraste um arquivo para cá ou clique em Abrir."),
-            button("Abrir").on_press(Message::PickFile),
+            control(button("Abrir").on_press(Message::PickFile)),
         ]
         .spacing(10)
         .align_x(Alignment::Center),
