@@ -50,6 +50,15 @@ cargo test -p tsuro-sign
 cargo run -p tsuro -- public/samples/guia-folio.pdf
 ```
 
+### Instalar no /Applications (macOS)
+
+```bash
+./scripts/bundle-macos.sh
+```
+
+Arraste `dist/Tsuro.app` para `/Applications` e abra pelo ícone (tsuru).
+PDFs abrem pelo botão Abrir ou arrastando o arquivo para a janela.
+
 ## Requisitos
 
 - Rust 1.85+ (`rustup default stable`)
