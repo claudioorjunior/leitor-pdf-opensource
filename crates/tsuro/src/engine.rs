@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 
 use pdfium_render::prelude::*;
@@ -10,6 +11,13 @@ use crate::page::{
 const PDFIUM_MISSING: &str =
     "Não foi possível carregar a biblioteca Pdfium (.dylib/.dll). Coloque-a na pasta do aplicativo ou instale-a no sistema.";
 const WORKER_GONE: &str = "motor PDF encerrado";
+const RENDER_TOO_LARGE: &str = "página grande demais para renderizar nesta escala";
+const RENDER_INVALID: &str = "dimensão de render inválida";
+
+/// Lado máximo em px. A4 a 8× (teto de zoom da UI) fica em ~4760×6736.
+const MAX_RENDER_SIDE: u32 = 16_384;
+/// Teto de pixels RGBA (bytes = este valor × 4). 64M ≈ 256 MiB; A4 a 8× ≈ 32M.
+const MAX_RENDER_PIXELS: u32 = 64_000_000;
 
 // O documento Pdfium fica aberto numa thread dedicada: bind + parse acontecem
 // uma vez por arquivo, e cada operação vira uma ida-e-volta leve pelo canal.
@@ -39,15 +47,16 @@ enum Request {
 
 impl PdfiumEngine {
     fn bind() -> Result<Pdfium, EngineError> {
-        // Bundle .app carrega a lib de Contents/Frameworks sem depender do cwd.
-        let bundled = bundled_library_path().and_then(|path| Pdfium::bind_to_library(path).ok());
-        let local =
-            || Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(".")).ok();
-        let bindings = bundled
-            .or_else(local)
-            .or_else(|| Pdfium::bind_to_system_library().ok())
-            .ok_or_else(|| EngineError(PDFIUM_MISSING.into()))?;
-        Ok(Pdfium::new(bindings))
+        // Bundle .app, depois a lib ao lado do binário. Nunca o cwd:
+        // um PDF numa pasta com libpdfium plantada não deve ser carregado.
+        for path in pdfium_library_candidates() {
+            if let Ok(bindings) = Pdfium::bind_to_library(&path) {
+                return Ok(Pdfium::new(bindings));
+            }
+        }
+        Pdfium::bind_to_system_library()
+            .map(Pdfium::new)
+            .map_err(|_| EngineError(PDFIUM_MISSING.into()))
     }
 
     fn call<T>(
@@ -152,6 +161,96 @@ fn page_data_from_doc(
     Ok((media, text))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct RenderTarget {
+    width: i32,
+    height: i32,
+}
+
+fn finite_positive(value: f32) -> Result<f32, EngineError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err(EngineError(RENDER_INVALID.into()))
+    }
+}
+
+fn px_from_f32(value: f32) -> Result<u32, EngineError> {
+    if !value.is_finite() {
+        return Err(EngineError(RENDER_INVALID.into()));
+    }
+    let rounded = value.round();
+    if !rounded.is_finite() {
+        return Err(EngineError(RENDER_INVALID.into()));
+    }
+    if rounded < 0.0 {
+        return Err(EngineError(RENDER_INVALID.into()));
+    }
+    if rounded < 1.0 {
+        return Ok(1);
+    }
+    if rounded > MAX_RENDER_SIDE as f32 {
+        return Err(EngineError(RENDER_TOO_LARGE.into()));
+    }
+    // Já limitado a [1, 16384]; f32 representa estes inteiros com exatidão.
+    #[allow(clippy::cast_possible_truncation)]
+    let px = rounded as u16;
+    Ok(u32::from(px))
+}
+
+fn effective_scale(target_px: u32, page_pt: f32) -> Result<f32, EngineError> {
+    let scale = target_px as f32 / page_pt;
+    if scale.is_finite() && scale > 0.0 {
+        Ok(scale)
+    } else {
+        Err(EngineError(RENDER_INVALID.into()))
+    }
+}
+
+/// Largura e altura em px para o render, *antes* de chamar o Pdfium.
+/// Recusa NaN/inf/≤0, lado acima do teto, bitmap RGBA que não cabe, ou
+/// escala efetiva `px / pts` não-finita (página subnormal: 1×1 passaria no
+/// teto, mas o pdfium-render faz `target / source` em f32 → inf).
+fn render_target_px(page_w: f32, page_h: f32, factor: f32) -> Result<RenderTarget, EngineError> {
+    let page_w = finite_positive(page_w)?;
+    let page_h = finite_positive(page_h)?;
+    let factor = finite_positive(factor)?;
+
+    let width_f = page_w * factor;
+    let height_f = page_h * factor;
+    if !width_f.is_finite() || !height_f.is_finite() {
+        return Err(EngineError(RENDER_INVALID.into()));
+    }
+
+    let width = px_from_f32(width_f)?;
+    let height = px_from_f32(height_f)?;
+    if width > MAX_RENDER_SIDE || height > MAX_RENDER_SIDE {
+        return Err(EngineError(RENDER_TOO_LARGE.into()));
+    }
+
+    let pixels = width
+        .checked_mul(height)
+        .ok_or_else(|| EngineError(RENDER_TOO_LARGE.into()))?;
+    if pixels > MAX_RENDER_PIXELS {
+        return Err(EngineError(RENDER_TOO_LARGE.into()));
+    }
+
+    let bytes = u64::from(pixels)
+        .checked_mul(4)
+        .ok_or_else(|| EngineError(RENDER_TOO_LARGE.into()))?;
+    let _: usize = usize::try_from(bytes).map_err(|_| EngineError(RENDER_TOO_LARGE.into()))?;
+
+    // pdfium-render `apply_to_page` faz `(target as f32) / source` e, se inf,
+    // aloca i32::MAX². Recusar *antes* de pedir o bitmap.
+    let _ = effective_scale(width, page_w)?;
+    let _ = effective_scale(height, page_h)?;
+
+    Ok(RenderTarget {
+        width: i32::try_from(width).map_err(|_| EngineError(RENDER_TOO_LARGE.into()))?,
+        height: i32::try_from(height).map_err(|_| EngineError(RENDER_TOO_LARGE.into()))?,
+    })
+}
+
 fn render_from_doc(
     document: &PdfDocument<'_>,
     page: PageNo,
@@ -161,9 +260,14 @@ fn render_from_doc(
         .pages()
         .get(page_index(page)?)
         .map_err(|e| EngineError(e.to_string()))?;
-    let factor = scale.factor();
-    let target_width = (pdf_page.width().value * factor).round().max(1.0) as i32;
-    let config = PdfRenderConfig::new().set_target_width(target_width);
+    let target = render_target_px(
+        pdf_page.width().value,
+        pdf_page.height().value,
+        scale.factor(),
+    )?;
+    // Tamanho fixo: o pdfium-render não divide por MediaBox (evita inf em
+    // página subnormal mesmo se o helper falhar em silêncio).
+    let config = PdfRenderConfig::new().set_fixed_size(target.width, target.height);
     let bitmap = pdf_page
         .render_with_config(&config)
         .map_err(|e| EngineError(e.to_string()))?;
@@ -186,18 +290,25 @@ fn page_index(page: PageNo) -> Result<u16, EngineError> {
     u16::try_from(page.index()).map_err(|_| EngineError("página fora do intervalo".into()))
 }
 
-fn bundled_library_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(frameworks_lib_path(exe.as_path()))
+fn pdfium_library_candidates() -> Vec<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .map(|exe| pdfium_candidates_for(&exe))
+        .unwrap_or_default()
 }
 
-fn frameworks_lib_path(exe: &std::path::Path) -> std::path::PathBuf {
-    exe.parent()
-        .map(|dir| {
-            dir.join("../Frameworks")
-                .join(Pdfium::pdfium_platform_library_name())
-        })
-        .unwrap_or_else(|| Pdfium::pdfium_platform_library_name_at_path("."))
+fn pdfium_candidates_for(exe: &Path) -> Vec<PathBuf> {
+    let mut out = vec![frameworks_lib_path(exe)];
+    if let Some(dir) = exe.parent() {
+        out.push(dir.join(Pdfium::pdfium_platform_library_name()));
+    }
+    out
+}
+
+fn frameworks_lib_path(exe: &Path) -> PathBuf {
+    let dir = exe.parent().unwrap_or_else(|| Path::new(""));
+    dir.join("../Frameworks")
+        .join(Pdfium::pdfium_platform_library_name())
 }
 
 fn rgba_from_bitmap(bitmap: &PdfBitmap<'_>) -> Vec<u8> {
@@ -262,7 +373,7 @@ mod tests {
 
     #[test]
     fn frameworks_path_points_at_bundle_lib() {
-        let exe = std::path::Path::new("/Applications/Tsuro.app/Contents/MacOS/tsuro");
+        let exe = Path::new("/Applications/Tsuro.app/Contents/MacOS/tsuro");
         let got = frameworks_lib_path(exe);
         assert_eq!(
             got.parent().and_then(|p| p.file_name()),
@@ -275,11 +386,93 @@ mod tests {
     }
 
     #[test]
+    fn pdfium_candidates_stay_next_to_the_binary() {
+        let exe = Path::new("/Applications/Tsuro.app/Contents/MacOS/tsuro");
+        let got = pdfium_candidates_for(exe);
+        assert!(got.iter().all(|p| p != Path::new(".") && p.is_absolute()));
+        assert!(got.iter().any(|p| p
+            .parent()
+            .and_then(|d| d.file_name())
+            .is_some_and(|n| n == "Frameworks")));
+        assert!(got
+            .iter()
+            .any(|p| p.parent() == Some(Path::new("/Applications/Tsuro.app/Contents/MacOS"))));
+    }
+
+    #[test]
     fn open_propagates_worker_errors_without_hanging() {
         // Bytes vazios nunca abrem: sem Pdfium, falha no bind; com Pdfium,
         // falha no parse. Em ambos os casos o handshake da worker responde.
         let bytes: Arc<[u8]> = Arc::from(Vec::new());
         let result = PdfiumEngine::open(bytes);
         assert!(result.is_err(), "bytes vazios devem falhar");
+    }
+
+    fn assert_too_large(page_w: f32, page_h: f32, factor: f32) {
+        let err = render_target_px(page_w, page_h, factor).unwrap_err();
+        assert_eq!(err.0, RENDER_TOO_LARGE);
+    }
+
+    fn assert_invalid(page_w: f32, page_h: f32, factor: f32) {
+        let err = render_target_px(page_w, page_h, factor).unwrap_err();
+        assert_eq!(err.0, RENDER_INVALID);
+    }
+
+    #[test]
+    fn render_target_rejects_narrow_tall_page() {
+        // Largura abaixo do teto; altura estoura o lado.
+        assert_too_large(10.0, 100_000.0, 1.0);
+    }
+
+    #[test]
+    fn render_target_rejects_wide_short_page() {
+        assert_too_large(100_000.0, 10.0, 1.0);
+    }
+
+    #[test]
+    fn render_target_rejects_pixel_cap_even_when_sides_fit() {
+        // 8001×8000 = 64_008_000 > 64M, ambos os lados < 16384.
+        assert_too_large(8_001.0, 8_000.0, 1.0);
+    }
+
+    #[test]
+    fn render_target_accepts_limits() {
+        let side = render_target_px(MAX_RENDER_SIDE as f32, 1.0, 1.0).unwrap();
+        assert_eq!(side.width, MAX_RENDER_SIDE as i32);
+        assert_eq!(side.height, 1);
+
+        let pixels = render_target_px(8_000.0, 8_000.0, 1.0).unwrap();
+        assert_eq!(pixels.width, 8_000);
+        assert_eq!(pixels.height, 8_000);
+
+        // A4 a 8×, zoom máximo da UI, tem de caber.
+        let a4 = render_target_px(595.0, 842.0, 8.0).unwrap();
+        assert_eq!(a4.width, 4_760);
+        assert_eq!(a4.height, 6_736);
+    }
+
+    #[test]
+    fn render_target_rejects_non_finite_and_non_positive() {
+        assert_invalid(f32::NAN, 100.0, 1.0);
+        assert_invalid(100.0, f32::NAN, 1.0);
+        assert_invalid(100.0, 100.0, f32::NAN);
+        assert_invalid(f32::INFINITY, 100.0, 1.0);
+        assert_invalid(100.0, f32::NEG_INFINITY, 1.0);
+        assert_invalid(100.0, 100.0, 0.0);
+        assert_invalid(0.0, 100.0, 1.0);
+        assert_invalid(100.0, 0.0, 1.0);
+        assert_invalid(-10.0, 100.0, 1.0);
+        assert_invalid(100.0, -10.0, 1.0);
+        assert_invalid(100.0, 100.0, -1.0);
+        // Produto explode para inf sem que cada argumento seja inf.
+        assert_invalid(1e30, 1.0, 1e10);
+    }
+
+    #[test]
+    fn render_target_rejects_subnormal_page_that_overflows_scale() {
+        // 1×1 passaria no teto de px, mas target/page_w em f32 é inf.
+        assert_invalid(1e-40, 1e-40, 1.0);
+        assert_invalid(1e-40, 100.0, 1.0);
+        assert_invalid(100.0, 1e-40, 1.0);
     }
 }
