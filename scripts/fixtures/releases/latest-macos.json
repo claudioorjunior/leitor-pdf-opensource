@@ -1,0 +1,15 @@
+{
+  "tag_name": "v0.2.0",
+  "assets": [
+    {
+      "name": "Tsuro-0.2.0-aarch64-apple-darwin.dmg",
+      "browser_download_url": "https://github.com/claudioorjunior/tsuro-pdf/releases/download/v0.2.0/Tsuro-0.2.0-aarch64-apple-darwin.dmg",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "name": "Tsuro-0.2.0-x86_64-pc-windows-msvc-setup.exe",
+      "browser_download_url": "https://github.com/claudioorjunior/tsuro-pdf/releases/download/v0.2.0/Tsuro-0.2.0-x86_64-pc-windows-msvc-setup.exe",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

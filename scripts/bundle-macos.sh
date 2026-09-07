@@ -1,14 +1,19 @@
 #!/bin/bash
-# Empacota o visor nativo como Tsuro.app (assinatura ad-hoc, teste local).
+# Empacota o visor nativo como Tsuro.app + DMG (assinatura ad-hoc).
 # Uso: ./scripts/bundle-macos.sh
-# Saída: dist/Tsuro.app — arraste para /Applications e abra pelo ícone.
+# Saída:
+#   dist/Tsuro.app
+#   dist/Tsuro-{versão}-aarch64-apple-darwin.dmg
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/dist/Tsuro.app"
 PDFIUM_RELEASE="chromium/8044"
+VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/crates/tsuro/Cargo.toml" | head -1)"
+TRIPLE="aarch64-apple-darwin"
+DMG="$ROOT/dist/Tsuro-${VERSION}-${TRIPLE}.dmg"
 
-# 1. Pdfium para dev (o engine procura ./libpdfium.dylib, Frameworks ou sistema).
+# 1. Pdfium para dev (o engine procura Frameworks, ao lado do binário, ou sistema).
 if [ ! -f "$ROOT/libpdfium.dylib" ]; then
   case "$(uname -m)" in
     arm64) ASSET="pdfium-mac-arm64.tgz" ;;
@@ -25,7 +30,7 @@ if [ ! -f "$ROOT/libpdfium.dylib" ]; then
 fi
 
 # 2. Binário release.
-cargo build --release -p tsuro
+cargo build --release -p tsuro --manifest-path "$ROOT/Cargo.toml"
 
 # 3. Ícone a partir da marca (tsuru).
 rm -rf "$APP"
@@ -48,11 +53,11 @@ else
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Tsuro.icns"
 fi
 
-# 4. Bundle (o passo 3 já criou Resources com o ícone).
+# 4. Bundle.
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks"
 cp "$ROOT/target/release/tsuro" "$APP/Contents/MacOS/tsuro"
 cp "$ROOT/libpdfium.dylib" "$APP/Contents/Frameworks/"
-cat >"$APP/Contents/Info.plist" <<'PLIST_EOF'
+cat >"$APP/Contents/Info.plist" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -68,9 +73,9 @@ cat >"$APP/Contents/Info.plist" <<'PLIST_EOF'
   <key>CFBundleIconFile</key>
   <string>Tsuro</string>
   <key>CFBundleVersion</key>
-  <string>0.1.0</string>
+  <string>${VERSION}</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
+  <string>${VERSION}</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
@@ -81,5 +86,16 @@ cat >"$APP/Contents/Info.plist" <<'PLIST_EOF'
 </plist>
 PLIST_EOF
 
-codesign -s - --force --deep "$APP"
+# Ad-hoc + runtime: sem Apple Developer Program. Gatekeeper pede "Abrir" na 1ª vez.
+codesign -s - --force --deep --options runtime "$APP"
+
+# 5. DMG com atalho para /Applications (evita zip → App Translocation).
+STAGE="$(mktemp -d)/Tsuro"
+mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/Tsuro.app"
+ln -s /Applications "$STAGE/Applications"
+rm -f "$DMG"
+hdiutil create -volname "Tsuro" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+rm -rf "$(dirname "$STAGE")"
 echo "Pronto: $APP"
+echo "Pronto: $DMG"
