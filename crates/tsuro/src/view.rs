@@ -1,6 +1,8 @@
 use tsuro_sign::SignatureStatus;
-use iced::widget::{button, column, container, image, row, scrollable, text, text_input, Space};
-use iced::{Alignment, Element, Length};
+use iced::widget::{
+    button, column, container, image, row, scrollable, svg, text, text_input, tooltip, Space,
+};
+use iced::{Alignment, Background, Border, Color, Element, Length, Shadow};
 
 use crate::page::PageNo;
 use crate::session::{Message, Ready, Session, Zoom, ZoomFactor};
@@ -67,9 +69,75 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
         if ready.selection_plain_text().is_some() {
             bar = bar.push(button("Copiar").on_press(Message::CopySelection));
         }
+        bar = bar.push(tip(signatures_toggle(ready), "Assinaturas"));
     }
 
     bar.into()
+}
+
+fn ink() -> Color {
+    Color::from_rgb8(0x1c, 0x1c, 0x1a)
+}
+
+fn line() -> Color {
+    Color::from_rgb8(0xe2, 0xe0, 0xd8)
+}
+
+fn chip() -> Color {
+    Color::from_rgb8(0xee, 0xec, 0xe6)
+}
+
+fn chip_press() -> Color {
+    Color::from_rgb8(0xd4, 0xd2, 0xc8)
+}
+
+fn tip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    label: &'static str,
+) -> Element<'a, Message> {
+    tooltip::Tooltip::new(content, text(label).size(13), tooltip::Position::Bottom).into()
+}
+
+fn shield_icon() -> svg::Svg<'static> {
+    svg(svg::Handle::from_memory(include_bytes!(
+        "../assets/icons/shield-check.svg"
+    )))
+    .width(Length::Fixed(17.0))
+    .height(Length::Fixed(17.0))
+    .style(|_theme, _status| svg::Style { color: Some(ink()) })
+}
+
+fn signatures_toggle(ready: &Ready) -> Element<'_, Message> {
+    let count = ready.signatures.signatures.len();
+    let open = ready.signatures_open;
+    button(
+        row![shield_icon(), text(format!("{count}")).size(13)]
+            .spacing(4)
+            .align_y(Alignment::Center),
+    )
+    .padding([7, 8])
+    .on_press(Message::ToggleSignatures)
+    .style(move |_theme, status| {
+        let background = if open {
+            chip_press()
+        } else {
+            match status {
+                button::Status::Hovered | button::Status::Pressed => chip_press(),
+                _ => chip(),
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: ink(),
+            border: Border {
+                color: line(),
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            shadow: Shadow::default(),
+        }
+    })
+    .into()
 }
 
 fn empty_drop() -> Element<'static, Message> {
@@ -90,10 +158,11 @@ fn empty_drop() -> Element<'static, Message> {
 }
 
 fn ready_body(ready: &Ready) -> Element<'_, Message> {
-    row![page_pane(ready), signatures_panel(ready)]
-        .spacing(12)
-        .height(Length::Fill)
-        .into()
+    let mut panes = row![page_pane(ready)].spacing(12).height(Length::Fill);
+    if ready.signatures_open {
+        panes = panes.push(signatures_panel(ready));
+    }
+    panes.into()
 }
 
 fn page_pane(ready: &Ready) -> Element<'_, Message> {

@@ -175,6 +175,7 @@ pub struct Ready {
     pub visible: PageNo,
     pub search: Search,
     pub selection: Option<Selection>,
+    pub signatures_open: bool,
     surfaces: SurfaceCache,
     viewport: Viewport,
 }
@@ -239,6 +240,7 @@ pub enum Message {
         scale: Scale,
         surface: PageSurface,
     },
+    ToggleSignatures,
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -384,6 +386,12 @@ impl Session {
                 }
                 Task::none()
             }
+            Message::ToggleSignatures => {
+                if let Session::Ready(ready) = self {
+                    ready.signatures_open = !ready.signatures_open;
+                }
+                Task::none()
+            }
         }
     }
 
@@ -411,7 +419,10 @@ impl Session {
 
     pub fn finish_open(&mut self, result: Result<Ready, OpenError>) {
         match result {
-            Ok(ready) => *self = Session::Ready(ready),
+            Ok(mut ready) => {
+                ready.signatures_open = false;
+                *self = Session::Ready(ready);
+            }
             Err(err) => {
                 let source = match self {
                     Session::Loading { source } => source.clone(),
@@ -564,6 +575,7 @@ impl Document {
             visible: PageNo::first(),
             search: Search::derive("", &[]),
             selection: None,
+            signatures_open: false,
             surfaces: SurfaceCache::default(),
             viewport: Viewport {
                 width: 960.0,
@@ -675,5 +687,97 @@ mod tests {
         };
         let scale = Zoom::Width.scale(viewport, media);
         assert!((scale.factor() - 2.0).abs() < 0.002);
+    }
+
+    fn apply(session: &mut Session, message: Message) {
+        let _ = session.update(message);
+    }
+
+    fn sample_ready() -> Option<Ready> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../public/samples/guia-folio.pdf");
+        let bytes = std::fs::read(&path).ok()?;
+        Document::from_bytes(OpenSource::Path(path), Arc::<[u8]>::from(bytes)).ok()
+    }
+
+    #[test]
+    fn ready_starts_with_signatures_closed() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        assert!(!ready.signatures_open);
+        let mut session = Session::empty();
+        session.finish_open(Ok(ready));
+        match &session {
+            Session::Ready(ready) => assert!(!ready.signatures_open),
+            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
+                panic!("finish_open should become Ready")
+            }
+        }
+    }
+
+    #[test]
+    fn toggle_signatures_flips_only_that_flag() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let visible = ready.visible;
+        let page_count = ready.page_count();
+        let query = ready.search.query().to_string();
+        let sigs = ready.signatures.signatures.len();
+        let mut session = Session::Ready(ready);
+        apply(&mut session, Message::ToggleSignatures);
+        match &session {
+            Session::Ready(ready) => {
+                assert!(ready.signatures_open);
+                assert_eq!(ready.visible, visible);
+                assert_eq!(ready.page_count(), page_count);
+                assert_eq!(ready.search.query(), query);
+                assert_eq!(ready.signatures.signatures.len(), sigs);
+                assert!(ready.selection.is_none());
+            }
+            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
+                panic!("toggle should stay Ready")
+            }
+        }
+        apply(&mut session, Message::ToggleSignatures);
+        match &session {
+            Session::Ready(ready) => {
+                assert!(!ready.signatures_open);
+                assert_eq!(ready.visible, visible);
+                assert_eq!(ready.page_count(), page_count);
+            }
+            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
+                panic!("toggle should stay Ready")
+            }
+        }
+    }
+
+    #[test]
+    fn close_and_reopen_do_not_inherit_signatures_open() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(ready);
+        apply(&mut session, Message::ToggleSignatures);
+        match &session {
+            Session::Ready(ready) => assert!(ready.signatures_open),
+            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
+                panic!("expected Ready after toggle")
+            }
+        }
+        apply(&mut session, Message::Close);
+        assert!(matches!(session, Session::Empty));
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.signatures_open = true;
+        session.finish_open(Ok(ready));
+        match &session {
+            Session::Ready(ready) => assert!(!ready.signatures_open),
+            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
+                panic!("finish_open should become Ready")
+            }
+        }
     }
 }
