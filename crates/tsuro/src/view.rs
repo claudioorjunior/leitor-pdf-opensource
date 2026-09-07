@@ -1,11 +1,15 @@
-use tsuro_sign::SignatureStatus;
 use iced::widget::{
     button, column, container, image, row, scrollable, svg, text, text_input, tooltip, Space,
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow};
+use tsuro_sign::SignatureStatus;
 
 use crate::page::PageNo;
 use crate::session::{Message, Ready, Session, Zoom, ZoomFactor};
+
+pub fn pages_scroll_id() -> scrollable::Id {
+    scrollable::Id::new("tsuro-pages")
+}
 
 fn paper() -> Color {
     Color::from_rgb8(0xfa, 0xfa, 0xf8)
@@ -114,6 +118,16 @@ fn signatures_toggle(ready: &Ready) -> Element<'_, Message> {
     )
 }
 
+fn pages_toggle(ready: &Ready) -> Element<'_, Message> {
+    tip(
+        control_active(
+            button(icon!("panel-left")).on_press(Message::TogglePages),
+            ready.pages_open,
+        ),
+        "Páginas",
+    )
+}
+
 pub fn chrome(session: &Session) -> Element<'_, Message> {
     let body: Element<'_, Message> = match session {
         Session::Empty => empty_drop(),
@@ -157,6 +171,7 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
         let idx = ready.visible.index();
         let prev = idx.saturating_sub(1);
         let next = (idx + 1).min(n - 1);
+        bar = bar.push(pages_toggle(ready));
         bar = bar.push(control(
             button("Anterior").on_press(Message::SetPage(PageNo::from_index(prev))),
         ));
@@ -215,11 +230,79 @@ fn empty_drop() -> Element<'static, Message> {
 }
 
 fn ready_body(ready: &Ready) -> Element<'_, Message> {
-    let mut panes = row![page_pane(ready)].spacing(12).height(Length::Fill);
+    let mut panes = row![].spacing(12).height(Length::Fill);
+    if ready.pages_open {
+        panes = panes.push(pages_panel(ready));
+    }
+    panes = panes.push(page_pane(ready));
     if ready.signatures_open {
         panes = panes.push(signatures_panel(ready));
     }
     panes.into()
+}
+
+fn pages_panel(ready: &Ready) -> Element<'_, Message> {
+    let mut col = column![].spacing(8);
+    for i in 0..ready.page_count() {
+        let page = PageNo::from_index(i);
+        let preview: Element<'_, Message> = match ready.thumb_surface(page) {
+            Some(surface) => {
+                let handle = image::Handle::from_rgba(
+                    surface.bitmap.width,
+                    surface.bitmap.height,
+                    surface.bitmap.rgba.clone(),
+                );
+                image(handle).width(Length::Fixed(120.0)).into()
+            }
+            None => container(text("…").size(13))
+                .width(Length::Fixed(120.0))
+                .height(Length::Fixed(150.0))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(chip())),
+                    border: Border {
+                        color: line(),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    text_color: Some(ink()),
+                    ..container::Style::default()
+                })
+                .into(),
+        };
+        col = col.push(
+            control_active(
+                button(
+                    column![preview, text(format!("{}", i + 1)).size(12)]
+                        .spacing(4)
+                        .align_x(Alignment::Center),
+                )
+                .on_press(Message::SetPage(page))
+                .width(Length::Fill),
+                ready.visible == page,
+            ),
+        );
+    }
+    container(
+        scrollable(col)
+            .id(pages_scroll_id())
+            .on_scroll(|viewport| Message::PagesScrolled(viewport.absolute_offset().y))
+            .height(Length::Fill),
+    )
+    .width(Length::Fixed(156.0))
+    .height(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Background::Color(paper())),
+        border: Border {
+            color: line(),
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        text_color: Some(ink()),
+        ..container::Style::default()
+    })
+    .into()
 }
 
 fn page_pane(ready: &Ready) -> Element<'_, Message> {
