@@ -1,4 +1,4 @@
-use folio_sign::SignatureStatus;
+use tsuro_sign::SignatureStatus;
 use iced::widget::{button, column, container, image, row, scrollable, text, text_input, Space};
 use iced::{Alignment, Element, Length};
 

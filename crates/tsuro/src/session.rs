@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use folio_sign::{analyze_pdf, PdfAnalysis};
+use tsuro_sign::{analyze_pdf, PdfAnalysis};
 use iced::clipboard;
 use iced::event::{self, Event};
 use iced::window;

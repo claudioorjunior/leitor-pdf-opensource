@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 43177",
     "tauri": "tauri",
-    "test:sign": "cargo test -p folio-sign"
+    "test:sign": "cargo test -p tsuro-sign"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
