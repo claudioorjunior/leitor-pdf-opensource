@@ -1,9 +1,15 @@
+use iced::widget::{
+    button, column, container, image, row, scrollable, svg, text, text_input, tooltip, Space,
+};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow};
 use tsuro_sign::SignatureStatus;
-use iced::widget::{button, column, container, image, row, scrollable, text, text_input, Space};
-use iced::{Alignment, Element, Length};
 
 use crate::page::PageNo;
 use crate::session::{Message, Ready, Session, Zoom, ZoomFactor};
+
+pub fn pages_scroll_id() -> scrollable::Id {
+    scrollable::Id::new("tsuro-pages")
+}
 
 pub fn chrome(session: &Session) -> Element<'_, Message> {
     let body: Element<'_, Message> = match session {
@@ -67,6 +73,13 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
         if ready.selection_plain_text().is_some() {
             bar = bar.push(button("Copiar").on_press(Message::CopySelection));
         }
+        bar = bar.push(tip(
+            button(pages_icon())
+                .on_press(Message::TogglePages)
+                .padding(Padding::from([7, 8]))
+                .style(pages_control_style(ready.pages_open)),
+            "Páginas",
+        ));
     }
 
     bar.into()
@@ -90,10 +103,76 @@ fn empty_drop() -> Element<'static, Message> {
 }
 
 fn ready_body(ready: &Ready) -> Element<'_, Message> {
-    row![page_pane(ready), signatures_panel(ready)]
-        .spacing(12)
-        .height(Length::Fill)
-        .into()
+    let mut panes = row![].spacing(12).height(Length::Fill);
+    if ready.pages_open {
+        panes = panes.push(pages_panel(ready));
+    }
+    panes = panes.push(page_pane(ready));
+    panes = panes.push(signatures_panel(ready));
+    panes.into()
+}
+
+fn pages_panel(ready: &Ready) -> Element<'_, Message> {
+    let mut col = column![].spacing(8);
+    for i in 0..ready.page_count() {
+        let page = PageNo::from_index(i);
+        let preview: Element<'_, Message> = match ready.thumb_surface(page) {
+            Some(surface) => {
+                let handle = image::Handle::from_rgba(
+                    surface.bitmap.width,
+                    surface.bitmap.height,
+                    surface.bitmap.rgba.clone(),
+                );
+                image(handle).width(Length::Fixed(120.0)).into()
+            }
+            None => container(text("…").size(13))
+                .width(Length::Fixed(120.0))
+                .height(Length::Fixed(150.0))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .style(|_| container::Style {
+                    background: Some(Background::Color(chip())),
+                    border: Border {
+                        color: line(),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    text_color: Some(ink()),
+                    ..container::Style::default()
+                })
+                .into(),
+        };
+        col = col.push(
+            button(
+                column![preview, text(format!("{}", i + 1)).size(12)]
+                    .spacing(4)
+                    .align_x(Alignment::Center),
+            )
+            .on_press(Message::SetPage(page))
+            .padding(Padding::from([7, 8]))
+            .style(pages_control_style(ready.visible == page))
+            .width(Length::Fill),
+        );
+    }
+    container(
+        scrollable(col)
+            .id(pages_scroll_id())
+            .on_scroll(|viewport| Message::PagesScrolled(viewport.absolute_offset().y))
+            .height(Length::Fill),
+    )
+    .width(Length::Fixed(156.0))
+    .height(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Background::Color(paper())),
+        border: Border {
+            color: line(),
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        text_color: Some(ink()),
+        ..container::Style::default()
+    })
+    .into()
 }
 
 fn page_pane(ready: &Ready) -> Element<'_, Message> {
@@ -160,4 +239,65 @@ fn status_label(status: SignatureStatus) -> &'static str {
         SignatureStatus::CertificateExpired => "Certificado expirado",
         SignatureStatus::CertificateNotYetValid => "Certificado ainda não válido",
     }
+}
+
+fn paper() -> Color {
+    Color::from_rgb8(0xfa, 0xfa, 0xf8)
+}
+
+fn ink() -> Color {
+    Color::from_rgb8(0x1c, 0x1c, 0x1a)
+}
+
+fn line() -> Color {
+    Color::from_rgb8(0xe2, 0xe0, 0xd8)
+}
+
+fn chip() -> Color {
+    Color::from_rgb8(0xee, 0xec, 0xe6)
+}
+
+fn chip_hover() -> Color {
+    Color::from_rgb8(0xe2, 0xe0, 0xd8)
+}
+
+fn chip_press() -> Color {
+    Color::from_rgb8(0xd4, 0xd2, 0xc8)
+}
+
+fn pages_icon() -> svg::Svg<'static> {
+    svg(svg::Handle::from_memory(include_bytes!(
+        "../assets/icons/panel-left.svg"
+    )))
+    .width(Length::Fixed(17.0))
+    .height(Length::Fixed(17.0))
+    .style(|_theme, _status| svg::Style { color: Some(ink()) })
+}
+
+fn pages_control_style(active: bool) -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    move |_theme, status| {
+        let background = if active {
+            chip_press()
+        } else {
+            match status {
+                button::Status::Hovered => chip_hover(),
+                button::Status::Pressed => chip_press(),
+                _ => chip(),
+            }
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: ink(),
+            border: Border {
+                color: line(),
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
+fn tip<'a>(content: impl Into<Element<'a, Message>>, label: &'static str) -> Element<'a, Message> {
+    tooltip::Tooltip::new(content, text(label).size(13), tooltip::Position::Bottom).into()
 }
