@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use folio::{Session, boot};
+use tsuro::{Session, boot};
 
 fn main() -> iced::Result {
     let session = match std::env::args().nth(1) {

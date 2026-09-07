@@ -1,4 +1,4 @@
-use folio_sign::{analyze_pdf, verify_cms_b64, PdfAnalysis, SignatureInfo};
+use tsuro_sign::{analyze_pdf, verify_cms_b64, PdfAnalysis, SignatureInfo};
 
 #[tauri::command]
 fn analyze_pdf_bytes(bytes: Vec<u8>) -> Result<PdfAnalysis, String> {

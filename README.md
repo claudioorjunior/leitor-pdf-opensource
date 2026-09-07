@@ -8,9 +8,33 @@ A marca é um tsuru de três dobras.
 
 Ainda não há seleção para anotar, destaque nem notas adesivas. Gravação automática na nuvem fica bem mais tarde.
 
-## Assinaturas (`folio-sign`)
+## Repositório
 
-O reconhecimento e a verificação das assinaturas vivem no crate Rust `folio-sign`:
+O canônico fica no Cursor Origin. O GitHub é o espelho público.
+
+Clone pelo Origin (preferido):
+
+```bash
+git clone https://origin.cursor.com/claudioorjunior/leitor-pdf-opensource.git
+```
+
+Com a CLI do Origin:
+
+```bash
+origin repo clone claudioorjunior/leitor-pdf-opensource
+```
+
+Clone pelo espelho no GitHub:
+
+```bash
+git clone https://github.com/claudioorjunior/leitor-pdf-opensource.git
+```
+
+Remotes locais típicos: `origin` (Cursor) e `github` (GitHub). Ao publicar, empurre os dois: `git push origin HEAD` e `git push github HEAD`.
+
+## Assinaturas (`tsuro-sign`)
+
+O reconhecimento e a verificação das assinaturas vivem no crate Rust `tsuro-sign`:
 
 - percorre AcroForm e dicionários `/Sig`
 - lê o PKCS#7/CMS (perfil `adbe.pkcs7.detached`)
@@ -19,17 +43,17 @@ O reconhecimento e a verificação das assinaturas vivem no crate Rust `folio-si
 
 ## Visor nativo
 
-O visor nativo em construção é o crate `folio` (iced + PDFium). Precisa da biblioteca Pdfium no cwd ou no sistema.
+O visor nativo em construção é o crate `tsuro` (iced + PDFium). Precisa da biblioteca Pdfium no cwd ou no sistema.
 
 ```bash
-cargo test -p folio-sign
-cargo run -p folio -- public/samples/guia-folio.pdf
+cargo test -p tsuro-sign
+cargo run -p tsuro -- public/samples/guia-folio.pdf
 ```
 
 ## Requisitos
 
 - Rust 1.85+ (`rustup default stable`)
-- Pdfium no cwd ou no sistema, para o crate `folio`
+- Pdfium no cwd ou no sistema, para o crate `tsuro`
 - Node.js 22+ só se você for mexer no legado Tauri
 
 ## Legado (Tauri e PDF.js)
@@ -48,7 +72,7 @@ No macOS o legado gera `.app` / `.dmg`. No Windows, instalador NSIS / MSI.
 
 ## Uso
 
-A janela nativa é o crate `folio`. Os controles estão na barra, não em atalhos de teclado.
+A janela nativa é o crate `tsuro`. Os controles estão na barra, não em atalhos de teclado.
 
 - **Abrir.** Botão, ou arrastar o arquivo para a janela.
 - **Fechar.** Fecha o documento aberto.
@@ -73,8 +97,8 @@ O certificado do contrato é **autoassinado**. Tsuro trata isso como assinatura 
 ## Arquitetura
 
 ```
-crates/folio            visor nativo (iced + PDFium)
-crates/folio-sign       motor Rust (PDF + CMS)
+crates/tsuro            visor nativo (iced + PDFium)
+crates/tsuro-sign       motor Rust (PDF + CMS)
 src-tauri               legado Tauri
 src                     legado React + PDF.js
 public/tsuro-mark.png   marca (tsuru de três dobras)
