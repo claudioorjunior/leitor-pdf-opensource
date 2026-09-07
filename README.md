@@ -15,19 +15,19 @@ O canônico fica no Cursor Origin. O GitHub é o espelho público.
 Clone pelo Origin (preferido):
 
 ```bash
-git clone https://origin.cursor.com/claudioorjunior/leitor-pdf-opensource.git
+git clone https://origin.cursor.com/claudioorjunior/tsuro-pdf.git
 ```
 
 Com a CLI do Origin:
 
 ```bash
-origin repo clone claudioorjunior/leitor-pdf-opensource
+origin repo clone claudioorjunior/tsuro-pdf
 ```
 
 Clone pelo espelho no GitHub:
 
 ```bash
-git clone https://github.com/claudioorjunior/leitor-pdf-opensource.git
+git clone https://github.com/claudioorjunior/tsuro-pdf.git
 ```
 
 Remotes locais típicos: `origin` (Cursor) e `github` (GitHub). Ao publicar, empurre os dois: `git push origin HEAD` e `git push github HEAD`.
