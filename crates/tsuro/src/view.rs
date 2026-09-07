@@ -1,9 +1,42 @@
 use tsuro_sign::SignatureStatus;
-use iced::widget::{button, column, container, image, row, scrollable, text, text_input, Space};
-use iced::{Alignment, Element, Length};
+use iced::widget::{
+    button, column, container, image, row, scrollable, svg, text, text_input, tooltip, Space,
+};
+use iced::{Alignment, Color, Element, Length};
 
 use crate::page::PageNo;
 use crate::session::{Message, Ready, Session, Zoom, ZoomFactor};
+
+fn ink() -> Color {
+    Color::from_rgb8(0x1c, 0x1c, 0x1a)
+}
+
+macro_rules! icon {
+    ($file:literal) => {
+        svg(svg::Handle::from_memory(include_bytes!(concat!(
+            "../assets/icons/",
+            $file,
+            ".svg"
+        ))))
+        .width(Length::Fixed(17.0))
+        .height(Length::Fixed(17.0))
+        .style(|_theme, _status| svg::Style { color: Some(ink()) })
+    };
+}
+
+fn tip<'a>(
+    content: impl Into<Element<'a, Message>>,
+    label: &'static str,
+) -> Element<'a, Message> {
+    tooltip::Tooltip::new(content, text(label).size(13), tooltip::Position::Bottom).into()
+}
+
+fn open_button() -> Element<'static, Message> {
+    tip(
+        button(icon!("folder-open")).on_press(Message::PickFile),
+        "Abrir PDF",
+    )
+}
 
 pub fn chrome(session: &Session) -> Element<'_, Message> {
     let body: Element<'_, Message> = match session {
@@ -28,7 +61,7 @@ pub fn chrome(session: &Session) -> Element<'_, Message> {
 
 fn toolbar(session: &Session) -> Element<'_, Message> {
     let mut bar = row![
-        button("Abrir").on_press(Message::PickFile),
+        open_button(),
         button("Fechar").on_press(Message::Close),
     ]
     .spacing(8)
@@ -77,7 +110,7 @@ fn empty_drop() -> Element<'static, Message> {
         column![
             text("Abra um PDF").size(22),
             text("Arraste um arquivo para cá ou clique em Abrir."),
-            button("Abrir").on_press(Message::PickFile),
+            open_button(),
         ]
         .spacing(10)
         .align_x(Alignment::Center),
