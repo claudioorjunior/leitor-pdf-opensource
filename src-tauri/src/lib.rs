@@ -1,4 +1,4 @@
-use folio_sign::{analyze_pdf, verify_cms_b64, PdfAnalysis, SignatureInfo};
+use tsuro_sign::{analyze_pdf, verify_cms_b64, PdfAnalysis, SignatureInfo};
 
 #[tauri::command]
 fn analyze_pdf_bytes(bytes: Vec<u8>) -> Result<PdfAnalysis, String> {
@@ -26,5 +26,5 @@ pub fn run() {
             verify_cms_signature
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Folio");
+        .expect("error while running Tsuro");
 }

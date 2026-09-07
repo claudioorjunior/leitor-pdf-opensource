@@ -42,7 +42,7 @@ export default function App() {
     try {
       const pdf = await loadPdf(bytes);
       setDoc({ name, size: bytes.byteLength, bytes, pdf });
-      document.title = `${name} — Folio`;
+      document.title = `${name} — Tsuro`;
       setPage(1);
       setFit("width");
       setSearch("");
@@ -213,7 +213,7 @@ export default function App() {
         onClose={() => {
           void doc?.pdf.cleanup();
           setDoc(null);
-          document.title = "Folio";
+          document.title = "Tsuro";
           setSignatures([]);
           setError(null);
           setSignaturesOpen(false);

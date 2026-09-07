@@ -57,7 +57,7 @@ export function Toolbar({
   return (
     <header className="titlebar flex h-10 shrink-0 items-center gap-2 px-2.5">
       <div className="flex w-[28%] min-w-0 items-center gap-1.5">
-        <img src="/folio.svg" alt="" className="h-5 w-5 rounded-[5px]" />
+        <img src="/tsuro-mark.png" alt="" className="h-5 w-5 rounded-[5px]" />
         <IconButton onClick={onOpen} title={`Abrir (${modLabel()}+O)`}>
           <FolderOpen className="h-3.5 w-3.5" />
         </IconButton>
@@ -69,7 +69,7 @@ export function Toolbar({
       </div>
 
       <div className="min-w-0 flex-1 truncate text-center text-[13px] font-medium tracking-tight text-ink">
-        {loading ? "A abrir…" : fileName ?? "Folio"}
+        {loading ? "A abrir…" : fileName ?? "Tsuro"}
       </div>
 
       <div className="flex w-[36%] min-w-0 items-center justify-end gap-1.5">
