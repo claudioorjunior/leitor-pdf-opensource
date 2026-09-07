@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Folio",
+  "productName": "Tsuro",
   "version": "0.1.0",
-  "identifier": "dev.folio.reader",
+  "identifier": "dev.tsuro.reader",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:43177",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Folio",
+        "title": "Tsuro",
         "width": 1280,
         "height": 840,
         "minWidth": 760,
@@ -36,6 +36,6 @@
     ],
     "category": "Productivity",
     "shortDescription": "Leitor de PDF leve",
-    "longDescription": "Folio é um leitor de PDF de código aberto para macOS e Windows: leve, fiel à tipografia e com verificação de assinaturas digitais."
+    "longDescription": "Tsuro é um leitor de PDF de código aberto para macOS e Windows: leve, fiel à tipografia e com verificação de assinaturas digitais."
   }
 }

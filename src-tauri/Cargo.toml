@@ -1,8 +1,8 @@
 [package]
-name = "folio"
+name = "folio-tauri"
 version = "0.1.0"
-description = "Folio — leitor de PDF leve para macOS e Windows"
-authors = ["Folio"]
+description = "Tsuro — leitor de PDF leve para macOS e Windows"
+authors = ["Tsuro"]
 edition = "2021"
 license = "MIT"
 

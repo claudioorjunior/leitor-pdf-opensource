@@ -26,5 +26,5 @@ pub fn run() {
             verify_cms_signature
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Folio");
+        .expect("error while running Tsuro");
 }
