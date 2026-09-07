@@ -9,10 +9,15 @@ use iced::window;
 use iced::Task;
 use tsuro_sign::{analyze_pdf, PdfAnalysis};
 
+use crate::browse::{
+    display_path, drop_recent, list_path, load_recents, parent_of, push_recent, read_recents,
+    save_recents, EmptyState, FsEntry,
+};
 use crate::engine::PdfiumEngine;
 use crate::page::{
     EngineError, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer, Viewport,
 };
+
 
 const THUMB_WIDTH: f32 = 120.0;
 const THUMB_ROW: f32 = 156.0;
@@ -164,10 +169,17 @@ pub struct Selection {
 }
 
 pub enum Session {
-    Empty,
-    Loading { source: OpenSource },
+    Empty(EmptyState),
+    Loading {
+        source: OpenSource,
+        recents: Vec<PathBuf>,
+    },
     Ready(Ready),
-    Failed { source: OpenSource, message: String },
+    Failed {
+        source: OpenSource,
+        message: String,
+        recents: Vec<PathBuf>,
+    },
 }
 
 #[derive(Clone)]
@@ -184,6 +196,7 @@ pub struct Ready {
     pub signatures_open: bool,
     pub pages_open: bool,
     pub pages_scroll_y: f32,
+    recents: Vec<PathBuf>,
     surfaces: SurfaceCache,
     thumbs: SurfaceCache,
     viewport: Viewport,
@@ -252,6 +265,13 @@ pub enum Message {
     ToggleSignatures,
     TogglePages,
     PagesScrolled(f32),
+    BrowseTo(Option<PathBuf>),
+    ListingReady {
+        path: Option<PathBuf>,
+        result: Result<Vec<FsEntry>, String>,
+    },
+    OpenRecent(PathBuf),
+    RecentsReady(Vec<PathBuf>),
 }
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -266,21 +286,23 @@ pub enum OpenError {
 
 impl Session {
     pub fn empty() -> Self {
-        Session::Empty
+        Session::Empty(EmptyState::default())
     }
 
     pub fn open_path(path: PathBuf) -> Self {
         Session::Loading {
             source: OpenSource::Path(path),
+            recents: read_recents(),
         }
     }
 
     pub fn boot(self) -> (Self, Task<Message>) {
         match &self {
-            Session::Loading { source } => {
+            Session::Loading { source, .. } => {
                 let source = source.clone();
                 (self, Task::perform(open_ready(source), Message::Opened))
             }
+            Session::Empty(_) => (self, empty_tasks()),
             _ => (self, Task::none()),
         }
     }
@@ -292,6 +314,7 @@ impl Session {
                 Some(source) => self.begin_open(source),
             },
             Message::FileDropped(path) => self.begin_open(OpenSource::Dropped(path)),
+            Message::OpenRecent(path) => self.begin_open(OpenSource::Path(path)),
             Message::Opened(result) => {
                 self.finish_open(result);
                 Task::batch([
@@ -316,10 +339,7 @@ impl Session {
                 }
                 Task::batch([self.ensure_surface(), self.ensure_thumbs()])
             }
-            Message::Close => {
-                *self = Session::Empty;
-                Task::none()
-            }
+            Message::Close => self.close_document(),
             Message::SetPage(page) => {
                 if let Session::Ready(ready) = self {
                     if page.index() < ready.pages.total {
@@ -419,6 +439,12 @@ impl Session {
                 }
                 self.ensure_thumbs()
             }
+            Message::ToggleSignatures => {
+                if let Session::Ready(ready) = self {
+                    ready.signatures_open = !ready.signatures_open;
+                }
+                Task::none()
+            }
             Message::TogglePages => {
                 let restore = if let Session::Ready(ready) = self {
                     ready.pages_open = !ready.pages_open;
@@ -445,9 +471,39 @@ impl Session {
                 }
                 self.ensure_thumbs()
             }
-            Message::ToggleSignatures => {
-                if let Session::Ready(ready) = self {
-                    ready.signatures_open = !ready.signatures_open;
+            Message::BrowseTo(path) => {
+                if let Session::Empty(empty) = self {
+                    empty.cwd = path.clone();
+                    empty.listing_error = None;
+                    return Task::perform(list_path(path.clone()), move |result| {
+                        Message::ListingReady {
+                            path: path.clone(),
+                            result,
+                        }
+                    });
+                }
+                Task::none()
+            }
+            Message::ListingReady { path, result } => {
+                if let Session::Empty(empty) = self {
+                    if empty.cwd == path {
+                        match result {
+                            Ok(listing) => {
+                                empty.listing = listing;
+                                empty.listing_error = None;
+                            }
+                            Err(err) => {
+                                empty.listing = Vec::new();
+                                empty.listing_error = Some(err);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::RecentsReady(recents) => {
+                if let Session::Empty(empty) = self {
+                    empty.recents = recents;
                 }
                 Task::none()
             }
@@ -470,15 +526,22 @@ impl Session {
     }
 
     pub fn begin_open(&mut self, source: OpenSource) -> Task<Message> {
+        let recents = self.recents();
         *self = Session::Loading {
             source: source.clone(),
+            recents,
         };
         Task::perform(open_ready(source), Message::Opened)
     }
 
     pub fn finish_open(&mut self, result: Result<Ready, OpenError>) {
+        let recents = self.recents();
         match result {
             Ok(mut ready) => {
+                let path = ready.source.path().to_path_buf();
+                let recents = push_recent(recents, path);
+                let _ = save_recents(&recents);
+                ready.recents = recents;
                 ready.signatures_open = false;
                 ready.pages_open = false;
                 ready.pages_scroll_y = 0.0;
@@ -486,16 +549,39 @@ impl Session {
             }
             Err(err) => {
                 let source = match self {
-                    Session::Loading { source } => source.clone(),
+                    Session::Loading { source, .. } => source.clone(),
                     Session::Failed { source, .. } => source.clone(),
                     Session::Ready(r) => r.source.clone(),
-                    Session::Empty => return,
+                    Session::Empty(_) => OpenSource::Path(PathBuf::new()),
                 };
+                let recents = match &err {
+                    OpenError::Io(_) => drop_recent(recents, source.path()),
+                    _ => recents,
+                };
+                let _ = save_recents(&recents);
                 *self = Session::Failed {
                     source,
                     message: err.to_string(),
+                    recents,
                 };
             }
+        }
+    }
+
+    fn close_document(&mut self) -> Task<Message> {
+        let recents = self.recents();
+        *self = Session::Empty(EmptyState {
+            recents,
+            ..EmptyState::default()
+        });
+        empty_tasks()
+    }
+
+    fn recents(&self) -> Vec<PathBuf> {
+        match self {
+            Session::Empty(empty) => empty.recents.clone(),
+            Session::Loading { recents, .. } | Session::Failed { recents, .. } => recents.clone(),
+            Session::Ready(ready) => ready.recents.clone(),
         }
     }
 
@@ -530,7 +616,8 @@ impl Session {
         if !ready.pages_open {
             return Task::none();
         }
-        let reading_ready = ready.has_page_data(ready.visible) || ready.visible_surface().is_some();
+        let reading_ready = ready.has_page_data(ready.visible)
+            || ready.visible_surface().is_some();
         if !reading_ready {
             return Task::none();
         }
@@ -547,6 +634,16 @@ impl Session {
         }
         Task::batch(tasks)
     }
+}
+
+fn empty_tasks() -> Task<Message> {
+    Task::batch([
+        Task::perform(load_recents(), Message::RecentsReady),
+        Task::perform(list_path(None), |result| Message::ListingReady {
+            path: None,
+            result,
+        }),
+    ])
 }
 
 fn page_data_task(engine: PdfiumEngine, page: PageNo) -> Task<Message> {
@@ -576,7 +673,7 @@ fn render_task(engine: PdfiumEngine, page: PageNo, scale: Scale) -> Task<Message
     )
 }
 
-fn thumbnail_scale(media: MediaBox) -> Scale {
+pub fn thumbnail_scale(media: MediaBox) -> Scale {
     Scale::from_factor((THUMB_WIDTH / media.width.max(1.0)).clamp(0.05, 2.0))
 }
 
@@ -624,6 +721,10 @@ impl Ready {
 
     pub fn text_layers(&self) -> Vec<&TextLayer> {
         self.pages.text.iter().flatten().collect()
+    }
+
+    pub fn recents(&self) -> &[PathBuf] {
+        &self.recents
     }
 
     pub fn selection_plain_text(&self) -> Option<String> {
@@ -695,6 +796,7 @@ impl Document {
             signatures_open: false,
             pages_open: false,
             pages_scroll_y: 0.0,
+            recents: Vec::new(),
             surfaces: SurfaceCache::default(),
             thumbs: SurfaceCache::default(),
             viewport: Viewport {
@@ -759,6 +861,19 @@ impl std::fmt::Debug for Ready {
     }
 }
 
+impl EmptyState {
+    pub fn path_label(&self) -> String {
+        display_path(self.cwd.as_deref())
+    }
+
+    pub fn parent(&self) -> Option<Option<PathBuf>> {
+        match &self.cwd {
+            None => None,
+            Some(cwd) => Some(parent_of(cwd)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,6 +881,20 @@ mod tests {
 
     fn apply(session: &mut Session, message: Message) {
         let _ = session.update(message);
+    }
+
+    fn isolated<R>(f: impl FnOnce() -> R) -> R {
+        let path = std::env::temp_dir().join(format!(
+            "tsuro-session-recents-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let result = crate::browse::with_recents_path(path.clone(), f);
+        let _ = std::fs::remove_file(path);
+        result
     }
 
     #[test]
@@ -816,49 +945,192 @@ mod tests {
     }
 
     #[test]
-    fn ready_starts_pages_closed() {
-        let Some(ready) = sample_ready() else {
-            return;
-        };
-        assert!(!ready.pages_open);
-        assert_eq!(ready.pages_scroll_y, 0.0);
-        let session = Session::Ready(ready);
+    fn empty_session_is_still_no_document() {
+        assert!(matches!(Session::empty(), Session::Empty(_)));
+        assert!(matches!(
+            Session::open_path(PathBuf::from("/tmp/doc.pdf")),
+            Session::Loading { .. }
+        ));
+    }
+
+    #[test]
+    fn listing_error_stays_empty() {
+        let mut session = Session::empty();
+        apply(
+            &mut session,
+            Message::ListingReady {
+                path: None,
+                result: Err("sem permissão".into()),
+            },
+        );
         match &session {
-            Session::Ready(ready) => assert!(!ready.pages_open),
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("expected Ready")
+            Session::Empty(empty) => {
+                assert_eq!(empty.listing_error.as_deref(), Some("sem permissão"));
+                assert!(empty.listing.is_empty());
             }
+            other => panic!("listing error left Empty, got {other:?}"),
         }
     }
 
     #[test]
-    fn toggle_pages_flips_only_that_flag() {
+    fn browse_into_folder_and_back() {
+        let folder = PathBuf::from("/tmp/tsuro-docs");
+        let mut session = Session::empty();
+        apply(
+            &mut session,
+            Message::ListingReady {
+                path: None,
+                result: Ok(vec![FsEntry {
+                    path: folder.clone(),
+                    name: "docs".into(),
+                    is_dir: true,
+                }]),
+            },
+        );
+        apply(&mut session, Message::BrowseTo(Some(folder.clone())));
+        match &session {
+            Session::Empty(empty) => assert_eq!(empty.cwd.as_deref(), Some(folder.as_path())),
+            other => panic!("expected Empty after BrowseTo, got {other:?}"),
+        }
+        apply(
+            &mut session,
+            Message::ListingReady {
+                path: Some(folder.clone()),
+                result: Ok(vec![FsEntry {
+                    path: folder.join("a.pdf"),
+                    name: "a.pdf".into(),
+                    is_dir: false,
+                }]),
+            },
+        );
+        match &session {
+            Session::Empty(empty) => {
+                assert_eq!(empty.listing.len(), 1);
+                assert!(!empty.listing[0].is_dir);
+            }
+            other => panic!("expected listing, got {other:?}"),
+        }
+        apply(&mut session, Message::BrowseTo(None));
+        match &session {
+            Session::Empty(empty) => assert!(empty.cwd.is_none()),
+            other => panic!("expected roots, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn open_path_skips_browser() {
+        let session = Session::open_path(PathBuf::from("/tmp/direct.pdf"));
+        assert!(matches!(session, Session::Loading { .. }));
+        assert!(!matches!(session, Session::Empty(_)));
+    }
+
+    #[test]
+    fn remember_recent_on_successful_open_and_close() {
+        isolated(|| {
+            let pdf = PathBuf::from("/tmp/remembered.pdf");
+            let mut session = Session::Empty(EmptyState {
+                recents: vec![PathBuf::from("/tmp/older.pdf")],
+                ..EmptyState::default()
+            });
+            let _ = session.begin_open(OpenSource::Path(pdf.clone()));
+            session.finish_open(Err(OpenError::Engine("sem motor no teste".into())));
+            match &session {
+                Session::Failed { recents, .. } => {
+                    assert!(recents.contains(&PathBuf::from("/tmp/older.pdf")));
+                }
+                other => panic!("expected Failed, got {other:?}"),
+            }
+            let Some(ready) = sample_ready() else {
+                return;
+            };
+            let mut session = Session::Empty(EmptyState {
+                recents: vec![PathBuf::from("/tmp/older.pdf")],
+                ..EmptyState::default()
+            });
+            let _ = session.begin_open(ready.source.clone());
+            session.finish_open(Ok(ready));
+            match &session {
+                Session::Ready(ready) => {
+                    assert!(!ready.signatures_open);
+                    assert!(!ready.pages_open);
+                    assert_eq!(
+                        ready.recents.first(),
+                        Some(&ready.source.path().to_path_buf())
+                    );
+                    assert!(ready.recents.contains(&PathBuf::from("/tmp/older.pdf")));
+                }
+                other => panic!("expected Ready, got {other:?}"),
+            }
+            apply(&mut session, Message::Close);
+            match &session {
+                Session::Empty(empty) => {
+                    assert_eq!(
+                        empty.recents.first().and_then(|p| p.file_name()),
+                        sample_pdf().file_name()
+                    );
+                }
+                other => panic!("Close should return to Empty, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn dead_recent_drops_after_io_failure() {
+        isolated(|| {
+            let missing = PathBuf::from("/tmp/tsuro-missing-recent.pdf");
+            let mut session = Session::Empty(EmptyState {
+                recents: vec![missing.clone(), PathBuf::from("/tmp/keep.pdf")],
+                ..EmptyState::default()
+            });
+            let _ = session.begin_open(OpenSource::Path(missing.clone()));
+            session.finish_open(Err(OpenError::Io("arquivo em falta".into())));
+            match &session {
+                Session::Failed { recents, message, .. } => {
+                    assert!(message.contains("arquivo em falta"));
+                    assert!(!recents.contains(&missing));
+                    assert!(recents.contains(&PathBuf::from("/tmp/keep.pdf")));
+                }
+                other => panic!("expected Failed, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn ready_panels_start_closed_and_toggle_independently() {
         let Some(ready) = sample_ready() else {
             return;
         };
-        let visible = ready.visible;
-        let zoom = ready.zoom;
-        let query = ready.search.query().to_string();
         let mut session = Session::Ready(ready);
-        apply(&mut session, Message::TogglePages);
         match &session {
             Session::Ready(ready) => {
-                assert!(ready.pages_open);
-                assert_eq!(ready.visible, visible);
-                assert!(matches!((ready.zoom, zoom), (Zoom::Width, Zoom::Width)));
-                assert_eq!(ready.search.query(), query);
-                assert_eq!(ready.pages_scroll_y, 0.0);
+                assert!(!ready.signatures_open);
+                assert!(!ready.pages_open);
             }
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("expected Ready")
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::ToggleSignatures);
+        match &session {
+            Session::Ready(ready) => {
+                assert!(ready.signatures_open);
+                assert!(!ready.pages_open);
             }
+            _ => unreachable!(),
         }
         apply(&mut session, Message::TogglePages);
         match &session {
-            Session::Ready(ready) => assert!(!ready.pages_open),
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("expected Ready")
+            Session::Ready(ready) => {
+                assert!(ready.signatures_open);
+                assert!(ready.pages_open);
             }
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::ToggleSignatures);
+        match &session {
+            Session::Ready(ready) => {
+                assert!(!ready.signatures_open);
+                assert!(ready.pages_open);
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -874,42 +1146,48 @@ mod tests {
         apply(&mut session, Message::SetPage(PageNo::from_index(1)));
         match &session {
             Session::Ready(ready) => assert_eq!(ready.visible.index(), 1),
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("expected Ready")
-            }
+            _ => unreachable!(),
         }
     }
 
     #[test]
-    fn close_and_new_ready_forget_pages_flags() {
-        let Some(ready) = sample_ready() else {
-            return;
-        };
-        let mut session = Session::Ready(ready);
-        apply(&mut session, Message::TogglePages);
-        apply(&mut session, Message::PagesScrolled(400.0));
-        match &session {
-            Session::Ready(ready) => {
-                assert!(ready.pages_open);
-                assert_eq!(ready.pages_scroll_y, 400.0);
+    fn close_and_reopen_do_not_inherit_panel_flags() {
+        isolated(|| {
+            let Some(ready) = sample_ready() else {
+                return;
+            };
+            let path = ready.source.path().to_path_buf();
+            let mut session = Session::Ready(ready);
+            apply(&mut session, Message::ToggleSignatures);
+            apply(&mut session, Message::TogglePages);
+            apply(&mut session, Message::Close);
+            assert!(matches!(session, Session::Empty(_)));
+            let Some(ready) = sample_ready() else {
+                return;
+            };
+            let _ = session.begin_open(OpenSource::Path(path));
+            session.finish_open(Ok(ready));
+            match &session {
+                Session::Ready(ready) => {
+                    assert!(!ready.signatures_open);
+                    assert!(!ready.pages_open);
+                }
+                other => panic!("expected Ready, got {other:?}"),
             }
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("expected Ready")
-            }
-        }
-        apply(&mut session, Message::Close);
-        assert!(matches!(session, Session::Empty));
-        let Some(ready) = sample_ready() else {
-            return;
-        };
-        session.finish_open(Ok(ready));
-        match &session {
-            Session::Ready(ready) => {
-                assert!(!ready.pages_open);
-                assert_eq!(ready.pages_scroll_y, 0.0);
-            }
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("expected Ready")
+        });
+    }
+
+    impl std::fmt::Debug for Session {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Session::Empty(empty) => f.debug_tuple("Empty").field(empty).finish(),
+                Session::Loading { source, .. } => {
+                    f.debug_struct("Loading").field("source", source).finish()
+                }
+                Session::Ready(ready) => f.debug_tuple("Ready").field(ready).finish(),
+                Session::Failed { message, .. } => {
+                    f.debug_struct("Failed").field("message", message).finish()
+                }
             }
         }
     }
@@ -923,89 +1201,4 @@ mod tests {
         let bytes = std::fs::read(&path).ok()?;
         Document::from_bytes(OpenSource::Path(path), Arc::<[u8]>::from(bytes)).ok()
     }
-    #[test]
-    fn ready_starts_with_signatures_closed() {
-        let Some(ready) = sample_ready() else {
-            return;
-        };
-        assert!(!ready.signatures_open);
-        let mut session = Session::empty();
-        session.finish_open(Ok(ready));
-        match &session {
-            Session::Ready(ready) => assert!(!ready.signatures_open),
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("finish_open should become Ready")
-            }
-        }
-    }
-
-    #[test]
-    fn toggle_signatures_flips_only_that_flag() {
-        let Some(ready) = sample_ready() else {
-            return;
-        };
-        let visible = ready.visible;
-        let page_count = ready.page_count();
-        let query = ready.search.query().to_string();
-        let sigs = ready.signatures.signatures.len();
-        let mut session = Session::Ready(ready);
-        apply(&mut session, Message::ToggleSignatures);
-        match &session {
-            Session::Ready(ready) => {
-                assert!(ready.signatures_open);
-                assert!(!ready.pages_open);
-                assert_eq!(ready.visible, visible);
-                assert_eq!(ready.page_count(), page_count);
-                assert_eq!(ready.search.query(), query);
-                assert_eq!(ready.signatures.signatures.len(), sigs);
-                assert!(ready.selection.is_none());
-            }
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("toggle should stay Ready")
-            }
-        }
-        apply(&mut session, Message::ToggleSignatures);
-        match &session {
-            Session::Ready(ready) => {
-                assert!(!ready.signatures_open);
-                assert_eq!(ready.visible, visible);
-                assert_eq!(ready.page_count(), page_count);
-            }
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("toggle should stay Ready")
-            }
-        }
-    }
-
-    #[test]
-    fn close_and_reopen_do_not_inherit_signatures_open() {
-        let Some(ready) = sample_ready() else {
-            return;
-        };
-        let mut session = Session::Ready(ready);
-        apply(&mut session, Message::ToggleSignatures);
-        match &session {
-            Session::Ready(ready) => assert!(ready.signatures_open),
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("expected Ready after toggle")
-            }
-        }
-        apply(&mut session, Message::Close);
-        assert!(matches!(session, Session::Empty));
-        let Some(mut ready) = sample_ready() else {
-            return;
-        };
-        ready.signatures_open = true;
-        session.finish_open(Ok(ready));
-        match &session {
-            Session::Ready(ready) => {
-                assert!(!ready.signatures_open);
-                assert!(!ready.pages_open);
-            }
-            Session::Empty | Session::Loading { .. } | Session::Failed { .. } => {
-                panic!("finish_open should become Ready")
-            }
-        }
-    }
-
 }

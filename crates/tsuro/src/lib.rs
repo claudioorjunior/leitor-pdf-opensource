@@ -1,3 +1,4 @@
+pub mod browse;
 pub mod page;
 pub mod session;
 pub mod view;

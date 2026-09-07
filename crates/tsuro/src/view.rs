@@ -4,6 +4,7 @@ use iced::widget::{
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Shadow};
 use tsuro_sign::SignatureStatus;
 
+use crate::browse::{display_path, parent_of, EmptyState, FsEntry};
 use crate::page::PageNo;
 use crate::session::{Message, Ready, Session, Zoom, ZoomFactor};
 
@@ -130,8 +131,10 @@ fn pages_toggle(ready: &Ready) -> Element<'_, Message> {
 
 pub fn chrome(session: &Session) -> Element<'_, Message> {
     let body: Element<'_, Message> = match session {
-        Session::Empty => empty_drop(),
-        Session::Loading { source } => text(format!("Abrindo {}…", source.path().display())).into(),
+        Session::Empty(empty) => empty_browser(empty),
+        Session::Loading { source, .. } => {
+            text(format!("Abrindo {}…", source.path().display())).into()
+        }
         Session::Failed { message, .. } => column![
             text("Não foi possível abrir o documento").size(20),
             text(message),
@@ -212,20 +215,117 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
     bar.into()
 }
 
-fn empty_drop() -> Element<'static, Message> {
+fn entry_style() -> impl Fn(&iced::Theme, button::Status) -> button::Style {
+    |_theme, status| {
+        let background = match status {
+            button::Status::Hovered | button::Status::Pressed => chip_hover(),
+            _ => chip(),
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: ink(),
+            border: Border {
+                color: line(),
+                width: 1.0,
+                radius: 6.0.into(),
+            },
+            shadow: Shadow::default(),
+        }
+    }
+}
+
+fn empty_browser(empty: &EmptyState) -> Element<'_, Message> {
+    let mut path_row = row![].spacing(6).align_y(Alignment::Center);
+    if empty.cwd.is_some() {
+        let parent = empty.cwd.as_deref().and_then(parent_of);
+        path_row = path_row.push(
+            button(icon!("chevron-left"))
+                .padding(Padding::from([6, 8]))
+                .style(entry_style())
+                .on_press(Message::BrowseTo(parent)),
+        );
+    }
+    path_row = path_row.push(text(display_path(empty.cwd.as_deref())).size(14));
+
+    let mut listing = column![].spacing(4);
+    if let Some(err) = &empty.listing_error {
+        listing = listing.push(text(err).size(13));
+    } else if empty.listing.is_empty() {
+        listing = listing.push(text("Nenhuma pasta ou PDF aqui.").size(13));
+    } else {
+        for entry in &empty.listing {
+            listing = listing.push(entry_row(entry));
+        }
+    }
+
+    let mut recents = column![].spacing(4);
+    if empty.recents.is_empty() {
+        recents = recents.push(text("Nenhum arquivo recente.").size(13));
+    } else {
+        for path in &empty.recents {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            recents = recents.push(
+                button(
+                    row![icon!("file-text"), text(name).size(14)]
+                        .spacing(8)
+                        .align_y(Alignment::Center),
+                )
+                .width(Length::Fill)
+                .padding(Padding::from([7, 8]))
+                .style(entry_style())
+                .on_press(Message::OpenRecent(path.clone())),
+            );
+        }
+    }
+
     container(
         column![
-            text("Abra um PDF").size(22),
-            text("Arraste um arquivo para cá ou clique em Abrir."),
-            open_button(),
+            path_row,
+            scrollable(listing)
+                .width(Length::Fill)
+                .height(Length::FillPortion(3)),
+            text("Últimos arquivos").size(16),
+            scrollable(recents)
+                .width(Length::Fill)
+                .height(Length::FillPortion(2)),
         ]
         .spacing(10)
-        .align_x(Alignment::Center),
+        .width(Length::Fill)
+        .height(Length::Fill),
     )
     .width(Length::Fill)
     .height(Length::Fill)
-    .center_x(Length::Fill)
-    .center_y(Length::Fill)
+    .style(|_| container::Style {
+        background: Some(Background::Color(paper())),
+        text_color: Some(ink()),
+        ..container::Style::default()
+    })
+    .into()
+}
+
+fn entry_row(entry: &FsEntry) -> Element<'static, Message> {
+    let message = if entry.is_dir {
+        Message::BrowseTo(Some(entry.path.clone()))
+    } else {
+        Message::OpenRecent(entry.path.clone())
+    };
+    let glyph: Element<'static, Message> = if entry.is_dir {
+        icon!("folder").into()
+    } else {
+        icon!("file-text").into()
+    };
+    button(
+        row![glyph, text(entry.name.clone()).size(14)]
+            .spacing(8)
+            .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([7, 8]))
+    .style(entry_style())
+    .on_press(message)
     .into()
 }
 
