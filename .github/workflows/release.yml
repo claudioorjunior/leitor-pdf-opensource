@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - name: Testes Rust
+        run: |
+          cargo test -p tsuro --lib -- --test-threads=1
+          cargo test -p tsuro-sign --lib
+      - name: Testes do instalador Bun
+        run: bun test scripts/install-tsuro
+      - name: DMG
+        run: ./scripts/bundle-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/Tsuro-*-aarch64-apple-darwin.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Testes Rust
+        run: |
+          cargo test -p tsuro --lib -- --test-threads=1
+          cargo test -p tsuro-sign --lib
+      - name: NSIS
+        run: choco install nsis -y --no-progress
+      - name: Instalador
+        run: powershell -ExecutionPolicy Bypass -File scripts/bundle-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis
+          path: dist/Tsuro-*-x86_64-pc-windows-msvc-setup.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [macos, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Publicar GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p out
+          find artifacts -type f \( -name '*.dmg' -o -name '*.exe' \) -exec cp {} out/ \;
+          test "$(find out -type f | wc -l)" -ge 2
+          cd out
+          sha256sum * | tee SHA256SUMS
+          NOTES="$(mktemp)"
+          cat >"$NOTES" <<EOF
+          Tsuro ${GITHUB_REF_NAME}
+
+          - Mac Apple Silicon: \`Tsuro-*-aarch64-apple-darwin.dmg\` — arraste para Applications.
+            Na primeira abertura: clique com o botão direito em Tsuro → Abrir (assinatura ad-hoc, sem Apple Developer Program).
+          - Windows x64: \`Tsuro-*-x86_64-pc-windows-msvc-setup.exe\` — instala em %LOCALAPPDATA%\\Programs\\Tsuro, sem admin.
+            Se o SmartScreen aparecer: Mais informações → Executar assim mesmo.
+
+          SHA-256 em \`SHA256SUMS\`. Instalador terminal: \`bun run install:tsuro -- --install\`.
+          EOF
+          gh release create "$GITHUB_REF_NAME" --title "Tsuro ${GITHUB_REF_NAME}" --notes-file "$NOTES" ./*
