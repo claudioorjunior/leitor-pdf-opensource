@@ -6,7 +6,7 @@ use tsuro_sign::SignatureStatus;
 
 use crate::browse::{display_path, parent_of, EmptyState, FsEntry};
 use crate::page::PageNo;
-use crate::session::{Message, Ready, Session, Zoom, ZoomFactor};
+use crate::session::{Message, Ready, Session, Zoom, ZoomFactor, THUMB_ROW};
 
 pub fn pages_scroll_id() -> scrollable::Id {
     scrollable::Id::new("tsuro-pages")
@@ -73,7 +73,8 @@ fn control_active(
     btn: iced::widget::button::Button<'_, Message>,
     active: bool,
 ) -> iced::widget::button::Button<'_, Message> {
-    btn.padding(Padding::from([7, 8])).style(control_style(active))
+    btn.padding(Padding::from([7, 8]))
+        .style(control_style(active))
 }
 
 macro_rules! icon {
@@ -89,10 +90,7 @@ macro_rules! icon {
     };
 }
 
-fn tip<'a>(
-    content: impl Into<Element<'a, Message>>,
-    label: &'static str,
-) -> Element<'a, Message> {
+fn tip<'a>(content: impl Into<Element<'a, Message>>, label: &'static str) -> Element<'a, Message> {
     tooltip::Tooltip::new(content, text(label).size(13), tooltip::Position::Bottom).into()
 }
 
@@ -185,7 +183,9 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
         bar = bar.push(control(
             button("Ajustar à largura").on_press(Message::SetZoom(Zoom::Width)),
         ));
-        bar = bar.push(control(button("Página").on_press(Message::SetZoom(Zoom::Page))));
+        bar = bar.push(control(
+            button("Página").on_press(Message::SetZoom(Zoom::Page)),
+        ));
         let current = match ready.zoom {
             Zoom::Manual(z) => z.get(),
             Zoom::Width | Zoom::Page => ready
@@ -193,13 +193,13 @@ fn toolbar(session: &Session) -> Element<'_, Message> {
                 .scale(ready.viewport(), ready.media(ready.visible))
                 .factor(),
         };
-        bar = bar.push(control(
-            button("−").on_press(Message::SetZoom(Zoom::Manual(ZoomFactor::new(current / 1.1)))),
-        ));
+        bar = bar.push(control(button("−").on_press(Message::SetZoom(
+            Zoom::Manual(ZoomFactor::new(current / 1.1)),
+        ))));
         bar = bar.push(text(format!("{:.0}%", current * 100.0)));
-        bar = bar.push(control(
-            button("+").on_press(Message::SetZoom(Zoom::Manual(ZoomFactor::new(current * 1.1)))),
-        ));
+        bar = bar.push(control(button("+").on_press(Message::SetZoom(
+            Zoom::Manual(ZoomFactor::new(current * 1.1)),
+        ))));
         bar = bar.push(
             text_input("Buscar", ready.search.query())
                 .on_input(Message::SearchChanged)
@@ -238,12 +238,13 @@ fn empty_browser(empty: &EmptyState) -> Element<'_, Message> {
     let mut path_row = row![].spacing(6).align_y(Alignment::Center);
     if empty.cwd.is_some() {
         let parent = empty.cwd.as_deref().and_then(parent_of);
-        path_row = path_row.push(
+        path_row = path_row.push(tip(
             button(icon!("chevron-left"))
                 .padding(Padding::from([6, 8]))
                 .style(entry_style())
                 .on_press(Message::BrowseTo(parent)),
-        );
+            "Voltar",
+        ));
     }
     path_row = path_row.push(text(display_path(empty.cwd.as_deref())).size(14));
 
@@ -342,8 +343,14 @@ fn ready_body(ready: &Ready) -> Element<'_, Message> {
 }
 
 fn pages_panel(ready: &Ready) -> Element<'_, Message> {
-    let mut col = column![].spacing(8);
-    for i in 0..ready.page_count() {
+    let window = ready.thumb_page_window();
+    let start = window.first().map(|page| page.index()).unwrap_or(0);
+    let end = window.last().map(|page| page.index() + 1).unwrap_or(0);
+    let mut col = column![].spacing(0);
+    if start > 0 {
+        col = col.push(Space::with_height(Length::Fixed(start as f32 * THUMB_ROW)));
+    }
+    for i in start..end {
         let page = PageNo::from_index(i);
         let preview: Element<'_, Message> = match ready.thumb_surface(page) {
             Some(surface) => {
@@ -372,7 +379,7 @@ fn pages_panel(ready: &Ready) -> Element<'_, Message> {
                 .into(),
         };
         col = col.push(
-            control_active(
+            container(control_active(
                 button(
                     column![preview, text(format!("{}", i + 1)).size(12)]
                         .spacing(4)
@@ -381,8 +388,16 @@ fn pages_panel(ready: &Ready) -> Element<'_, Message> {
                 .on_press(Message::SetPage(page))
                 .width(Length::Fill),
                 ready.visible == page,
-            ),
+            ))
+            .width(Length::Fill)
+            .height(Length::Fixed(THUMB_ROW)),
         );
+    }
+    let remaining = ready.page_count().saturating_sub(end);
+    if remaining > 0 {
+        col = col.push(Space::with_height(Length::Fixed(
+            remaining as f32 * THUMB_ROW,
+        )));
     }
     container(
         scrollable(col)
@@ -414,6 +429,9 @@ fn page_pane(ready: &Ready) -> Element<'_, Message> {
                 surface.bitmap.rgba.clone(),
             );
             image(handle).width(Length::Fill).into()
+        }
+        None if ready.visible_render_failed() => {
+            text("Não foi possível renderizar esta página.").into()
         }
         None => text("Renderizando página…").into(),
     };

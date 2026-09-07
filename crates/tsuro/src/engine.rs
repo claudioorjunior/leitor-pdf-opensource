@@ -192,7 +192,7 @@ fn px_from_f32(value: f32) -> Result<u32, EngineError> {
     if rounded > MAX_RENDER_SIDE as f32 {
         return Err(EngineError(RENDER_TOO_LARGE.into()));
     }
-    // Já limitado a [1, 16384]; f32 representa estes inteiros com exactidão.
+    // Já limitado a [1, 16384]; f32 representa estes inteiros com exatidão.
     #[allow(clippy::cast_possible_truncation)]
     let px = rounded as u16;
     Ok(u32::from(px))

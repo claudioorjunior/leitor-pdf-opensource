@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,8 +18,8 @@ use crate::page::{
     EngineError, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer, Viewport,
 };
 
-const THUMB_WIDTH: f32 = 120.0;
-const THUMB_ROW: f32 = 156.0;
+pub(crate) const THUMB_WIDTH: f32 = 120.0;
+pub(crate) const THUMB_ROW: f32 = 156.0;
 const THUMB_VISIBLE: u32 = 8;
 const THUMB_PREFETCH: u32 = 3;
 
@@ -172,12 +172,14 @@ pub enum Session {
     Loading {
         source: OpenSource,
         recents: Vec<PathBuf>,
+        gen: u64,
     },
     Ready(Ready),
     Failed {
         source: OpenSource,
         message: String,
         recents: Vec<PathBuf>,
+        gen: u64,
     },
 }
 
@@ -196,8 +198,11 @@ pub struct Ready {
     pub pages_open: bool,
     pub pages_scroll_y: f32,
     recents: Vec<PathBuf>,
+    open_gen: u64,
     surfaces: SurfaceCache,
     thumbs: SurfaceCache,
+    inflight: HashSet<(u32, u16)>,
+    failed: HashSet<(u32, u16)>,
     viewport: Viewport,
 }
 
@@ -230,13 +235,28 @@ impl SurfaceCache {
     fn insert(&mut self, page: PageNo, scale: Scale, surface: PageSurface) {
         self.entries.insert((page.index(), scale.key()), surface);
     }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn retain_pages(&mut self, mut keep: impl FnMut(u32) -> bool) {
+        self.entries.retain(|&(page, _), _| keep(page));
+    }
+}
+
+fn render_key(page: PageNo, scale: Scale) -> (u32, u16) {
+    (page.index(), scale.key())
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
     PickFile,
     FileDropped(PathBuf),
-    Opened(Result<Ready, OpenError>),
+    Opened {
+        gen: u64,
+        result: Result<Ready, OpenError>,
+    },
     PageData {
         page: PageNo,
         result: Result<(MediaBox, TextLayer), String>,
@@ -259,7 +279,7 @@ pub enum Message {
     Rendered {
         page: PageNo,
         scale: Scale,
-        surface: PageSurface,
+        surface: Option<PageSurface>,
     },
     ToggleSignatures,
     TogglePages,
@@ -292,14 +312,22 @@ impl Session {
         Session::Loading {
             source: OpenSource::Path(path),
             recents: read_recents(),
+            gen: 1,
         }
     }
 
     pub fn boot(self) -> (Self, Task<Message>) {
         match &self {
-            Session::Loading { source, .. } => {
+            Session::Loading { source, gen, .. } => {
                 let source = source.clone();
-                (self, Task::perform(open_ready(source), Message::Opened))
+                let gen = *gen;
+                (
+                    self,
+                    Task::perform(open_ready(source), move |result| Message::Opened {
+                        gen,
+                        result,
+                    }),
+                )
             }
             Session::Empty(_) => (self, empty_tasks()),
             _ => (self, Task::none()),
@@ -319,14 +347,16 @@ impl Session {
                     self.begin_open(OpenSource::Dropped(path))
                 }
             }
-            Message::OpenRecent(path) => self.begin_open(OpenSource::Path(path)),
-            Message::Opened(result) => {
-                self.finish_open(result);
-                Task::batch([
-                    self.ensure_page_data(),
-                    self.ensure_surface(),
-                    self.ensure_thumbs(),
-                ])
+            Message::OpenRecent(path) => {
+                if !is_pdf(&path) {
+                    Task::none()
+                } else {
+                    self.begin_open(OpenSource::Path(path))
+                }
+            }
+            Message::Opened { gen, result } => {
+                self.apply_open(gen, result);
+                self.ready_followup()
             }
             Message::PageData { page, result } => {
                 if let Session::Ready(ready) = self {
@@ -342,7 +372,7 @@ impl Session {
                         }
                     }
                 }
-                Task::batch([self.ensure_surface(), self.ensure_thumbs()])
+                self.ready_followup()
             }
             Message::Close => self.close_document(),
             Message::SetPage(page) => {
@@ -351,21 +381,13 @@ impl Session {
                         ready.visible = page;
                     }
                 }
-                Task::batch([
-                    self.ensure_page_data(),
-                    self.ensure_surface(),
-                    self.ensure_thumbs(),
-                ])
+                self.ready_followup()
             }
             Message::SetZoom(zoom) => {
                 if let Session::Ready(ready) = self {
                     ready.zoom = zoom;
                 }
-                Task::batch([
-                    self.ensure_page_data(),
-                    self.ensure_surface(),
-                    self.ensure_thumbs(),
-                ])
+                self.ready_followup()
             }
             Message::SetViewport(viewport) => {
                 if let Session::Ready(ready) = self {
@@ -380,11 +402,7 @@ impl Session {
                         ready.visible = hit.page;
                     }
                 }
-                Task::batch([
-                    self.ensure_page_data(),
-                    self.ensure_surface(),
-                    self.ensure_thumbs(),
-                ])
+                self.ready_followup()
             }
             Message::PointerDown { page, page_pt } => {
                 if let Session::Ready(ready) = self {
@@ -431,16 +449,29 @@ impl Session {
                 surface,
             } => {
                 if let Session::Ready(ready) = self {
-                    let current = ready.zoom.scale(ready.viewport, ready.media(page));
-                    if ready.visible == page && current == scale {
-                        ready.surfaces.insert(page, scale, surface);
-                    } else if ready.pages_open {
-                        if let Some(media) = ready.loaded_media(page) {
-                            if thumbnail_scale(media) == scale {
-                                ready.thumbs.insert(page, scale, surface);
+                    let key = render_key(page, scale);
+                    ready.inflight.remove(&key);
+                    match surface {
+                        Some(surface) => {
+                            ready.failed.remove(&key);
+                            let current = ready.zoom.scale(ready.viewport, ready.media(page));
+                            if ready.visible == page && current == scale {
+                                ready.surfaces.insert(page, scale, surface);
+                            } else if ready.pages_open {
+                                if let Some(media) = ready.loaded_media(page) {
+                                    if thumbnail_scale(media) == scale
+                                        && ready.thumb_page_window().contains(&page)
+                                    {
+                                        ready.thumbs.insert(page, scale, surface);
+                                    }
+                                }
                             }
                         }
+                        None => {
+                            ready.failed.insert(key);
+                        }
                     }
+                    ready.evict_unused();
                 }
                 self.ensure_thumbs()
             }
@@ -453,15 +484,15 @@ impl Session {
             Message::TogglePages => {
                 let restore = if let Session::Ready(ready) = self {
                     ready.pages_open = !ready.pages_open;
+                    if !ready.pages_open {
+                        ready.thumbs.clear();
+                    }
+                    ready.failed.clear();
                     ready.pages_open.then_some(ready.pages_scroll_y)
                 } else {
                     None
                 };
-                let mut tasks = vec![
-                    self.ensure_page_data(),
-                    self.ensure_surface(),
-                    self.ensure_thumbs(),
-                ];
+                let mut tasks = vec![self.ready_followup()];
                 if let Some(y) = restore {
                     tasks.push(scrollable::scroll_to(
                         crate::view::pages_scroll_id(),
@@ -534,14 +565,33 @@ impl Session {
 
     pub fn begin_open(&mut self, source: OpenSource) -> Task<Message> {
         let recents = self.recents();
+        let mut gen = self.open_gen().wrapping_add(1);
+        if gen == 0 {
+            gen = 1;
+        }
         *self = Session::Loading {
             source: source.clone(),
             recents,
+            gen,
         };
-        Task::perform(open_ready(source), Message::Opened)
+        Task::perform(open_ready(source), move |result| Message::Opened {
+            gen,
+            result,
+        })
     }
 
     pub fn finish_open(&mut self, result: Result<Ready, OpenError>) {
+        let Some(gen) = self.loading_gen() else {
+            return;
+        };
+        self.apply_open(gen, result);
+    }
+
+    fn apply_open(&mut self, gen: u64, result: Result<Ready, OpenError>) {
+        match self {
+            Session::Loading { gen: current, .. } if *current == gen => {}
+            _ => return,
+        }
         let recents = merge_recents(self.recents(), read_recents());
         match result {
             Ok(mut ready) => {
@@ -549,6 +599,7 @@ impl Session {
                 let recents = push_recent(recents, path);
                 let _ = save_recents(&recents);
                 ready.recents = recents;
+                ready.open_gen = gen;
                 ready.signatures_open = false;
                 ready.pages_open = false;
                 ready.pages_scroll_y = 0.0;
@@ -559,7 +610,7 @@ impl Session {
                     Session::Loading { source, .. } => source.clone(),
                     Session::Failed { source, .. } => source.clone(),
                     Session::Ready(r) => r.source.clone(),
-                    Session::Empty(_) => OpenSource::Path(PathBuf::new()),
+                    Session::Empty(_) => return,
                 };
                 let recents = match &err {
                     OpenError::Io(_) => drop_recent(recents, source.path()),
@@ -570,6 +621,7 @@ impl Session {
                     source,
                     message: err.to_string(),
                     recents,
+                    gen,
                 };
             }
         }
@@ -577,8 +629,10 @@ impl Session {
 
     fn close_document(&mut self) -> Task<Message> {
         let recents = self.recents();
+        let open_gen = self.open_gen();
         *self = Session::Empty(EmptyState {
             recents,
+            open_gen,
             ..EmptyState::default()
         });
         empty_tasks()
@@ -592,10 +646,33 @@ impl Session {
         }
     }
 
-    fn ensure_surface(&self) -> Task<Message> {
+    fn open_gen(&self) -> u64 {
+        match self {
+            Session::Empty(empty) => empty.open_gen,
+            Session::Loading { gen, .. } | Session::Failed { gen, .. } => *gen,
+            Session::Ready(ready) => ready.open_gen,
+        }
+    }
+
+    fn loading_gen(&self) -> Option<u64> {
+        match self {
+            Session::Loading { gen, .. } => Some(*gen),
+            _ => None,
+        }
+    }
+
+    fn ready_followup(&mut self) -> Task<Message> {
+        let data = self.ensure_page_data();
+        let surface = self.ensure_surface();
+        let thumbs = self.ensure_thumbs();
+        Task::batch([data, surface, thumbs])
+    }
+
+    fn ensure_surface(&mut self) -> Task<Message> {
         let Session::Ready(ready) = self else {
             return Task::none();
         };
+        ready.evict_unused();
         ready.request_render()
     }
 
@@ -616,10 +693,11 @@ impl Session {
         Task::batch(tasks)
     }
 
-    fn ensure_thumbs(&self) -> Task<Message> {
+    fn ensure_thumbs(&mut self) -> Task<Message> {
         let Session::Ready(ready) = self else {
             return Task::none();
         };
+        ready.evict_unused();
         if !ready.pages_open {
             return Task::none();
         }
@@ -633,9 +711,14 @@ impl Session {
                 continue;
             };
             let scale = thumbnail_scale(media);
-            if ready.thumbs.get(page, scale).is_some() {
+            let key = render_key(page, scale);
+            if ready.thumbs.get(page, scale).is_some()
+                || ready.inflight.contains(&key)
+                || ready.failed.contains(&key)
+            {
                 continue;
             }
+            ready.inflight.insert(key);
             tasks.push(render_task(ready.engine.clone(), page, scale));
         }
         Task::batch(tasks)
@@ -667,8 +750,8 @@ fn render_task(engine: PdfiumEngine, page: PageNo, scale: Scale) -> Task<Message
     Task::perform(
         async move {
             match tokio::task::spawn_blocking(move || engine.render(page, scale)).await {
-                Ok(Ok(surface)) => (page, scale, surface),
-                _ => (page, scale, empty_surface(page, scale)),
+                Ok(Ok(surface)) => (page, scale, Some(surface)),
+                _ => (page, scale, None),
             }
         },
         move |(page, scale, surface)| Message::Rendered {
@@ -718,6 +801,11 @@ impl Ready {
         self.surface(self.visible, scale)
     }
 
+    pub fn visible_render_failed(&self) -> bool {
+        let scale = self.zoom.scale(self.viewport, self.media(self.visible));
+        self.failed.contains(&render_key(self.visible, scale))
+    }
+
     pub fn viewport(&self) -> Viewport {
         self.viewport
     }
@@ -745,36 +833,40 @@ impl Ready {
         self.search = Search::derive(&query, &self.pages.text);
     }
 
-    fn thumb_page_window(&self) -> Vec<PageNo> {
+    pub(crate) fn thumb_page_window(&self) -> Vec<PageNo> {
         let first = (self.pages_scroll_y / THUMB_ROW).floor().max(0.0) as u32;
         let start = first.saturating_sub(THUMB_PREFETCH);
         let end = (start + THUMB_VISIBLE + THUMB_PREFETCH * 2).min(self.pages.total);
         (start..end).map(PageNo::from_index).collect()
     }
 
-    fn request_render(&self) -> Task<Message> {
+    fn evict_unused(&mut self) {
+        let visible = self.visible.index();
+        self.surfaces.retain_pages(|page| page == visible);
+        if !self.pages_open {
+            self.thumbs.clear();
+            return;
+        }
+        let keep: HashSet<u32> = self
+            .thumb_page_window()
+            .into_iter()
+            .map(|page| page.index())
+            .collect();
+        self.thumbs.retain_pages(|page| keep.contains(&page));
+    }
+
+    fn request_render(&mut self) -> Task<Message> {
         let page = self.visible;
         let scale = self.zoom.scale(self.viewport, self.media(page));
-        if self.surfaces.get(page, scale).is_some() {
+        let key = render_key(page, scale);
+        if self.surfaces.get(page, scale).is_some()
+            || self.inflight.contains(&key)
+            || self.failed.contains(&key)
+        {
             return Task::none();
         }
+        self.inflight.insert(key);
         render_task(self.engine.clone(), page, scale)
-    }
-}
-
-fn empty_surface(page: PageNo, scale: Scale) -> PageSurface {
-    PageSurface {
-        bitmap: crate::page::Bitmap {
-            width: 1,
-            height: 1,
-            rgba: vec![0, 0, 0, 0],
-        },
-        text: TextLayer {
-            page,
-            plain: String::new(),
-            glyphs: Vec::new(),
-        },
-        scale,
     }
 }
 
@@ -800,8 +892,11 @@ impl Document {
             pages_open: false,
             pages_scroll_y: 0.0,
             recents: Vec::new(),
+            open_gen: 0,
             surfaces: SurfaceCache::default(),
             thumbs: SurfaceCache::default(),
+            inflight: HashSet::new(),
+            failed: HashSet::new(),
             viewport: Viewport {
                 width: 960.0,
                 height: 720.0,
@@ -1203,6 +1298,7 @@ mod tests {
         let mut session = Session::Loading {
             source: OpenSource::Path(PathBuf::from("/tmp/direct.pdf")),
             recents: Vec::new(),
+            gen: 1,
         };
         apply(
             &mut session,
@@ -1213,6 +1309,106 @@ mod tests {
                 assert_eq!(recents, &vec![PathBuf::from("/tmp/old.pdf")]);
             }
             other => panic!("expected Loading, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stale_opened_after_close_is_ignored() {
+        isolated(|| {
+            let mut session = Session::empty();
+            let _ = session.begin_open(OpenSource::Path(PathBuf::from("/tmp/a.pdf")));
+            let gen = match &session {
+                Session::Loading { gen, .. } => *gen,
+                other => panic!("expected Loading, got {other:?}"),
+            };
+            apply(&mut session, Message::Close);
+            assert!(matches!(session, Session::Empty(_)));
+            apply(
+                &mut session,
+                Message::Opened {
+                    gen,
+                    result: Err(OpenError::Engine("atrasado".into())),
+                },
+            );
+            match &session {
+                Session::Empty(_) => {}
+                other => panic!("stale Opened must not leave Empty, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn stale_opened_does_not_replace_newer_open() {
+        isolated(|| {
+            let mut session = Session::empty();
+            let _ = session.begin_open(OpenSource::Path(PathBuf::from("/tmp/a.pdf")));
+            let gen_a = match &session {
+                Session::Loading { gen, .. } => *gen,
+                other => panic!("expected Loading, got {other:?}"),
+            };
+            let _ = session.begin_open(OpenSource::Path(PathBuf::from("/tmp/b.pdf")));
+            apply(
+                &mut session,
+                Message::Opened {
+                    gen: gen_a,
+                    result: Err(OpenError::Engine("A atrasado".into())),
+                },
+            );
+            match &session {
+                Session::Loading { source, .. } => {
+                    assert_eq!(source.path(), PathBuf::from("/tmp/b.pdf").as_path());
+                }
+                other => panic!("A's result replaced B, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn open_recent_ignores_non_pdf() {
+        let mut session = Session::empty();
+        apply(
+            &mut session,
+            Message::OpenRecent(PathBuf::from("/tmp/note.txt")),
+        );
+        assert!(matches!(session, Session::Empty(_)));
+    }
+
+    #[test]
+    fn failed_render_is_not_cached() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let page = ready.visible;
+        let scale = ready.zoom.scale(ready.viewport, ready.media(page));
+        let mut session = Session::Ready(ready);
+        apply(
+            &mut session,
+            Message::Rendered {
+                page,
+                scale,
+                surface: None,
+            },
+        );
+        match &session {
+            Session::Ready(ready) => {
+                assert!(ready.surface(page, scale).is_none());
+                assert!(ready.visible_render_failed());
+            }
+            other => panic!("expected Ready, got {other:?}"),
+        }
+        apply(
+            &mut session,
+            Message::SetViewport(Viewport {
+                width: 960.0,
+                height: 720.0,
+            }),
+        );
+        match &session {
+            Session::Ready(ready) => {
+                assert!(ready.surface(page, scale).is_none());
+                assert!(ready.visible_render_failed());
+            }
+            other => panic!("expected Ready, got {other:?}"),
         }
     }
 

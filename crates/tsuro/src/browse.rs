@@ -1,5 +1,4 @@
 #[cfg(test)]
-#[cfg(test)]
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
@@ -27,6 +26,8 @@ pub struct EmptyState {
     pub listing: Vec<FsEntry>,
     pub listing_error: Option<String>,
     pub recents: Vec<PathBuf>,
+    /// Última geração de `Opened`; sobrevive ao Close para recusar resultado atrasado.
+    pub open_gen: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +69,11 @@ pub fn recents_file() -> PathBuf {
 }
 
 pub fn read_recents() -> Vec<PathBuf> {
-    let Ok(raw) = std::fs::read_to_string(recents_file()) else {
+    read_recents_from(&recents_file())
+}
+
+fn read_recents_from(file: &Path) -> Vec<PathBuf> {
+    let Ok(raw) = std::fs::read_to_string(file) else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -78,6 +83,9 @@ pub fn read_recents() -> Vec<PathBuf> {
             continue;
         }
         let path = PathBuf::from(line);
+        if !is_pdf(&path) {
+            continue;
+        }
         if !out.contains(&path) {
             out.push(path);
         }
@@ -195,7 +203,9 @@ pub async fn list_path(path: Option<PathBuf>) -> Result<Vec<FsEntry>, String> {
 }
 
 pub async fn load_recents() -> Vec<PathBuf> {
-    tokio::task::spawn_blocking(read_recents)
+    // Captura o path nesta thread: `thread_local` de teste não atravessa o worker.
+    let file = recents_file();
+    tokio::task::spawn_blocking(move || read_recents_from(&file))
         .await
         .unwrap_or_default()
 }
@@ -254,6 +264,32 @@ mod tests {
             save_recents(&recents).unwrap();
             let loaded = read_recents();
             assert_eq!(loaded, recents);
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_recents_skips_non_pdf() {
+        let path = std::env::temp_dir().join(format!(
+            "tsuro-recents-filter-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        with_recents_path(path.clone(), || {
+            save_recents(&[
+                PathBuf::from("/tmp/ok.pdf"),
+                PathBuf::from("/tmp/note.txt"),
+                PathBuf::from("/tmp/also.PDF"),
+            ])
+            .unwrap();
+            let loaded = read_recents();
+            assert_eq!(
+                loaded,
+                vec![PathBuf::from("/tmp/ok.pdf"), PathBuf::from("/tmp/also.PDF")]
+            );
         });
         let _ = std::fs::remove_file(&path);
     }
