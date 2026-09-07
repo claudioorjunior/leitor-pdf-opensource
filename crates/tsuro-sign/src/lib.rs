@@ -4,6 +4,9 @@
 //! dictionaries). Cryptographic checks decode the PKCS#7/CMS blob, compare the
 //! message-digest signed attribute with the ByteRange payload, and verify the
 //! signer’s RSA signature over the signed attributes.
+//!
+//! A matching digest and RSA check only prove integrity of the covered bytes.
+//! Without a trust anchor this crate never reports [`SignatureStatus::Valid`].
 
 mod cms;
 
@@ -114,8 +117,10 @@ pub fn analyze_pdf(bytes: &[u8]) -> Result<PdfAnalysis, SigError> {
 }
 
 pub fn verify_cms_b64(pkcs7_b64: &str, sha256_hex: &str) -> Result<SignatureInfo, SigError> {
-    let pkcs7 = B64.decode(pkcs7_b64).map_err(|e| SigError::Cms(e.to_string()))?;
-    let digest = hex_decode(sha256_hex).map_err(|e| SigError::Cms(e))?;
+    let pkcs7 = B64
+        .decode(pkcs7_b64)
+        .map_err(|e| SigError::Cms(e.to_string()))?;
+    let digest = hex_decode(sha256_hex).map_err(SigError::Cms)?;
     verify_cms(&pkcs7, Some(digest.as_slice()), None)
 }
 
@@ -175,6 +180,12 @@ pub fn verify_cms(
         return Ok(info);
     }
 
+    if parsed.digest_algorithm == "SHA-1" {
+        info.status = SignatureStatus::Unsupported;
+        info.status_detail = "SHA-1 não é aceito para verificação de assinatura.".into();
+        return Ok(info);
+    }
+
     let Some(signed_attrs) = parsed.signed_attrs_for_verify.as_ref() else {
         info.status = SignatureStatus::IntactButUntrusted;
         info.status_detail =
@@ -195,9 +206,6 @@ pub fn verify_cms(
         "SHA-256" => VerifyingKey::<Sha256>::new(public)
             .verify(signed_attrs, &signature)
             .is_ok(),
-        "SHA-1" => VerifyingKey::<Sha1>::new_unprefixed(public)
-            .verify(signed_attrs, &signature)
-            .is_ok(),
         other => {
             info.status = SignatureStatus::IntactButUntrusted;
             info.status_detail = format!(
@@ -213,16 +221,32 @@ pub fn verify_cms(
         return Ok(info);
     }
 
+    if let (Some(not_before), Some(not_after)) = (parsed.cert_not_before, parsed.cert_not_after) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if now < not_before {
+            info.status = SignatureStatus::CertificateNotYetValid;
+            info.status_detail = "O certificado ainda não é válido.".into();
+            return Ok(info);
+        }
+        if now > not_after {
+            info.status = SignatureStatus::CertificateExpired;
+            info.status_detail = "O certificado expirou.".into();
+            return Ok(info);
+        }
+    }
+
+    info.status = SignatureStatus::IntactButUntrusted;
     if certificate
         .as_ref()
         .map(|c| c.is_self_signed)
         .unwrap_or(true)
     {
-        info.status = SignatureStatus::IntactButUntrusted;
         info.status_detail = "Assinatura criptograficamente válida, mas o certificado é autoassinado — não há cadeia de confiança pública.".into();
     } else {
-        info.status = SignatureStatus::Valid;
-        info.status_detail = "Assinatura íntegra: o conteúdo coberto não foi alterado.".into();
+        info.status_detail = "Assinatura íntegra, mas a cadeia do certificado não foi verificada — não há âncora de confiança.".into();
     }
 
     Ok(info)
@@ -259,33 +283,30 @@ fn signature_from_dict(
 
     let byte_range = parse_byte_range(dict);
     let covers = byte_range
-        .map(|br| covers_whole_document(bytes, br))
+        .map(|br| covers_whole_document(bytes, br, &contents))
         .unwrap_or(false);
 
-    let sha256 = byte_range.map(|br| hash_byte_range::<Sha256>(bytes, br));
-    let sha1 = byte_range.map(|br| hash_byte_range::<Sha1>(bytes, br));
+    let sha256 = byte_range.and_then(|br| hash_byte_range::<Sha256>(bytes, br));
+    let sha1 = byte_range.and_then(|br| hash_byte_range::<Sha1>(bytes, br));
 
-    let mut info = verify_cms(
-        &contents,
-        sha256.as_deref(),
-        sha1.as_deref(),
-    )
-    .unwrap_or_else(|e| SignatureInfo {
-        field_name: None,
-        signer_name: string_of(dict.get(b"Name").ok()),
-        reason: string_of(dict.get(b"Reason").ok()),
-        location: string_of(dict.get(b"Location").ok()),
-        contact_info: string_of(dict.get(b"ContactInfo").ok()),
-        signing_time: string_of(dict.get(b"M").ok()),
-        filter: name_of(dict.get(b"Filter").ok().unwrap_or(&Object::Null)),
-        sub_filter: name_of(dict.get(b"SubFilter").ok().unwrap_or(&Object::Null)),
-        byte_range,
-        covers_whole_document: covers,
-        status: SignatureStatus::Invalid,
-        status_detail: e.to_string(),
-        certificate: None,
-        digest_algorithm: None,
-        signature_algorithm: None,
+    let mut info = verify_cms(&contents, sha256.as_deref(), sha1.as_deref()).unwrap_or_else(|e| {
+        SignatureInfo {
+            field_name: None,
+            signer_name: string_of(dict.get(b"Name").ok()),
+            reason: string_of(dict.get(b"Reason").ok()),
+            location: string_of(dict.get(b"Location").ok()),
+            contact_info: string_of(dict.get(b"ContactInfo").ok()),
+            signing_time: string_of(dict.get(b"M").ok()),
+            filter: name_of(dict.get(b"Filter").ok().unwrap_or(&Object::Null)),
+            sub_filter: name_of(dict.get(b"SubFilter").ok().unwrap_or(&Object::Null)),
+            byte_range,
+            covers_whole_document: covers,
+            status: SignatureStatus::Invalid,
+            status_detail: e.to_string(),
+            certificate: None,
+            digest_algorithm: None,
+            signature_algorithm: None,
+        }
     });
 
     if info.field_name.is_none() {
@@ -314,7 +335,11 @@ fn signature_from_dict(
     info.byte_range = byte_range.or(info.byte_range);
     info.covers_whole_document = covers;
 
-    if !covers && matches!(info.status, SignatureStatus::Valid | SignatureStatus::IntactButUntrusted)
+    if !covers
+        && !matches!(
+            info.status,
+            SignatureStatus::DocumentModified | SignatureStatus::Invalid
+        )
     {
         info.status = SignatureStatus::DocumentModified;
         info.status_detail =
@@ -376,38 +401,117 @@ fn parse_byte_range(dict: &Dictionary) -> Option<[i64; 4]> {
     let mut out = [0i64; 4];
     for (i, item) in items.iter().enumerate() {
         out[i] = match item {
-            Object::Integer(n) => *n,
-            Object::Real(n) => *n as i64,
+            Object::Integer(n) if *n >= 0 => *n,
+            Object::Real(n) if n.is_finite() && *n >= 0.0 => *n as i64,
             _ => return None,
         };
     }
     Some(out)
 }
 
-fn covers_whole_document(bytes: &[u8], br: [i64; 4]) -> bool {
-    let [a, b, c, d] = br.map(|n| n as usize);
-    if a != 0 || a + b > bytes.len() || c + d > bytes.len() || a + b > c {
-        return false;
-    }
-    let gap = &bytes[a + b..c];
-    if gap.first() != Some(&b'<') || gap.last() != Some(&b'>') {
-        return false;
-    }
-    let tail = &bytes[c + d..];
-    tail.iter()
-        .all(|b| matches!(b, b' ' | b'\n' | b'\r' | b'\t' | 0 | b'\x0c'))
+fn is_pdf_ws(b: u8) -> bool {
+    matches!(b, b' ' | b'\n' | b'\r' | b'\t' | 0 | b'\x0c')
 }
 
-fn hash_byte_range<D: Digest>(bytes: &[u8], br: [i64; 4]) -> Vec<u8> {
-    let [a, b, c, d] = br.map(|n| n as usize);
+fn byte_range_slices(bytes: &[u8], br: [i64; 4]) -> Option<(&[u8], &[u8])> {
+    let [a, b, c, d] = br;
+    let a = usize::try_from(a).ok()?;
+    let b = usize::try_from(b).ok()?;
+    let c = usize::try_from(c).ok()?;
+    let d = usize::try_from(d).ok()?;
+    let first_end = a.checked_add(b)?;
+    let second_end = c.checked_add(d)?;
+    if first_end > bytes.len() || second_end > bytes.len() || first_end > c {
+        return None;
+    }
+    Some((&bytes[a..first_end], &bytes[c..second_end]))
+}
+
+fn covers_whole_document(bytes: &[u8], br: [i64; 4], contents: &[u8]) -> bool {
+    let [a, b, c, d] = br;
+    if a != 0 {
+        return false;
+    }
+    if byte_range_slices(bytes, br).is_none() {
+        return false;
+    }
+    let Ok(a) = usize::try_from(a) else {
+        return false;
+    };
+    let Ok(b) = usize::try_from(b) else {
+        return false;
+    };
+    let Ok(c) = usize::try_from(c) else {
+        return false;
+    };
+    let Ok(d) = usize::try_from(d) else {
+        return false;
+    };
+    let Some(gap_start) = a.checked_add(b) else {
+        return false;
+    };
+    let Some(tail_start) = c.checked_add(d) else {
+        return false;
+    };
+    if tail_start > bytes.len() || gap_start > c {
+        return false;
+    }
+    if !bytes[tail_start..].iter().copied().all(is_pdf_ws) {
+        return false;
+    }
+    gap_is_contents(&bytes[gap_start..c], contents)
+}
+
+fn gap_is_contents(gap: &[u8], contents: &[u8]) -> bool {
+    let start = gap.iter().position(|b| !is_pdf_ws(*b)).unwrap_or(gap.len());
+    let end = gap
+        .iter()
+        .rposition(|b| !is_pdf_ws(*b))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    if start >= end {
+        return false;
+    }
+    let core = &gap[start..end];
+    if core.len() < 2 || core[0] != b'<' || core[core.len() - 1] != b'>' {
+        return false;
+    }
+    let inner = &core[1..core.len() - 1];
+    if !inner
+        .iter()
+        .copied()
+        .all(|b| b.is_ascii_hexdigit() || is_pdf_ws(b))
+    {
+        return false;
+    }
+    let hex: Vec<u8> = inner
+        .iter()
+        .copied()
+        .filter(u8::is_ascii_hexdigit)
+        .collect();
+    if !hex.len().is_multiple_of(2) {
+        return false;
+    }
+    let Ok(hex_str) = std::str::from_utf8(&hex) else {
+        return false;
+    };
+    let Ok(decoded) = hex_decode(hex_str) else {
+        return false;
+    };
+    padded_bytes_eq(&decoded, contents)
+}
+
+fn padded_bytes_eq(a: &[u8], b: &[u8]) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    long.starts_with(short) && long[short.len()..].iter().all(|b| *b == 0)
+}
+
+fn hash_byte_range<D: Digest>(bytes: &[u8], br: [i64; 4]) -> Option<Vec<u8>> {
+    let (first, second) = byte_range_slices(bytes, br)?;
     let mut hasher = D::new();
-    let start = a.min(bytes.len());
-    let mid = (a + b).min(bytes.len());
-    let second = c.min(bytes.len());
-    let end = (c + d).min(bytes.len());
-    hasher.update(&bytes[start..mid]);
-    hasher.update(&bytes[second..end]);
-    hasher.finalize().to_vec()
+    hasher.update(first);
+    hasher.update(second);
+    Some(hasher.finalize().to_vec())
 }
 
 fn format_pdf_date(raw: &str) -> String {
@@ -428,7 +532,7 @@ fn format_pdf_date(raw: &str) -> String {
 }
 
 fn hex_decode(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("hex inválido".into());
     }
     (0..s.len())
@@ -462,10 +566,13 @@ mod tests {
         assert_eq!(analysis.signatures.len(), 1, "{analysis:?}");
         let sig = &analysis.signatures[0];
         assert!(sig.covers_whole_document, "{}", sig.status_detail);
+        assert_ne!(sig.status, SignatureStatus::Valid, "{}", sig.status_detail);
         assert!(
             matches!(
                 sig.status,
-                SignatureStatus::Valid | SignatureStatus::IntactButUntrusted
+                SignatureStatus::IntactButUntrusted
+                    | SignatureStatus::CertificateExpired
+                    | SignatureStatus::CertificateNotYetValid
             ),
             "{:?} {}",
             sig.status,
@@ -502,5 +609,29 @@ mod tests {
             "{:?}",
             analysis.signatures[0]
         );
+    }
+
+    #[test]
+    fn negative_byte_range_does_not_panic() {
+        let bytes = vec![0u8; 32];
+        assert!(!covers_whole_document(&bytes, [0, 10, -1, 1], b""));
+        assert!(hash_byte_range::<Sha256>(&bytes, [0, 10, -1, 1]).is_none());
+        assert!(hash_byte_range::<Sha256>(&bytes, [0, 4, 8, 4]).is_some());
+    }
+
+    #[test]
+    fn gap_must_be_the_contents_hex_string() {
+        let contents = b"\x01\x02";
+        let mut bytes = b"AAAA".to_vec();
+        bytes.extend_from_slice(b"<0102>");
+        bytes.extend_from_slice(b"BBBB");
+        let br = [0, 4, 10, 4];
+        assert!(covers_whole_document(&bytes, br, contents));
+
+        let mut dirty = b"AAAA".to_vec();
+        dirty.extend_from_slice(b"<0102>xref>");
+        dirty.extend_from_slice(b"BBBB");
+        let dirty_br = [0, 4, 15, 4];
+        assert!(!covers_whole_document(&dirty, dirty_br, contents));
     }
 }

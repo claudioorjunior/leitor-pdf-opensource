@@ -10,14 +10,13 @@ use iced::Task;
 use tsuro_sign::{analyze_pdf, PdfAnalysis};
 
 use crate::browse::{
-    display_path, drop_recent, list_path, load_recents, parent_of, push_recent, read_recents,
-    save_recents, EmptyState, FsEntry,
+    display_path, drop_recent, is_pdf, list_path, load_recents, merge_recents, parent_of,
+    push_recent, read_recents, save_recents, EmptyState, FsEntry,
 };
 use crate::engine::PdfiumEngine;
 use crate::page::{
     EngineError, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer, Viewport,
 };
-
 
 const THUMB_WIDTH: f32 = 120.0;
 const THUMB_ROW: f32 = 156.0;
@@ -313,7 +312,13 @@ impl Session {
                 None => Task::none(),
                 Some(source) => self.begin_open(source),
             },
-            Message::FileDropped(path) => self.begin_open(OpenSource::Dropped(path)),
+            Message::FileDropped(path) => {
+                if !is_pdf(&path) {
+                    Task::none()
+                } else {
+                    self.begin_open(OpenSource::Dropped(path))
+                }
+            }
             Message::OpenRecent(path) => self.begin_open(OpenSource::Path(path)),
             Message::Opened(result) => {
                 self.finish_open(result);
@@ -502,8 +507,10 @@ impl Session {
                 Task::none()
             }
             Message::RecentsReady(recents) => {
-                if let Session::Empty(empty) = self {
-                    empty.recents = recents;
+                match self {
+                    Session::Empty(empty) => empty.recents = recents,
+                    Session::Loading { recents: slot, .. } => *slot = recents,
+                    Session::Ready(_) | Session::Failed { .. } => {}
                 }
                 Task::none()
             }
@@ -535,7 +542,7 @@ impl Session {
     }
 
     pub fn finish_open(&mut self, result: Result<Ready, OpenError>) {
-        let recents = self.recents();
+        let recents = merge_recents(self.recents(), read_recents());
         match result {
             Ok(mut ready) => {
                 let path = ready.source.path().to_path_buf();
@@ -616,8 +623,7 @@ impl Session {
         if !ready.pages_open {
             return Task::none();
         }
-        let reading_ready = ready.has_page_data(ready.visible)
-            || ready.visible_surface().is_some();
+        let reading_ready = ready.has_page_data(ready.visible) || ready.visible_surface().is_some();
         if !reading_ready {
             return Task::none();
         }
@@ -690,10 +696,7 @@ impl Ready {
     }
 
     fn loaded_media(&self, page: PageNo) -> Option<MediaBox> {
-        self.pages
-            .media
-            .get(page.index() as usize)
-            .and_then(|m| *m)
+        self.pages.media.get(page.index() as usize).and_then(|m| *m)
     }
 
     fn has_page_data(&self, page: PageNo) -> bool {
@@ -1085,7 +1088,9 @@ mod tests {
             let _ = session.begin_open(OpenSource::Path(missing.clone()));
             session.finish_open(Err(OpenError::Io("arquivo em falta".into())));
             match &session {
-                Session::Failed { recents, message, .. } => {
+                Session::Failed {
+                    recents, message, ..
+                } => {
                     assert!(message.contains("arquivo em falta"));
                     assert!(!recents.contains(&missing));
                     assert!(recents.contains(&PathBuf::from("/tmp/keep.pdf")));
@@ -1175,6 +1180,40 @@ mod tests {
                 other => panic!("expected Ready, got {other:?}"),
             }
         });
+    }
+
+    #[test]
+    fn finish_open_merges_disk_recents_when_memory_is_empty() {
+        isolated(|| {
+            save_recents(&[PathBuf::from("/tmp/disk.pdf")]).unwrap();
+            let mut session = Session::Empty(EmptyState::default());
+            let _ = session.begin_open(OpenSource::Path(PathBuf::from("/tmp/new.pdf")));
+            session.finish_open(Err(OpenError::Engine("sem motor no teste".into())));
+            match &session {
+                Session::Failed { recents, .. } => {
+                    assert!(recents.contains(&PathBuf::from("/tmp/disk.pdf")));
+                }
+                other => panic!("expected Failed, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn recents_ready_fills_loading_session() {
+        let mut session = Session::Loading {
+            source: OpenSource::Path(PathBuf::from("/tmp/direct.pdf")),
+            recents: Vec::new(),
+        };
+        apply(
+            &mut session,
+            Message::RecentsReady(vec![PathBuf::from("/tmp/old.pdf")]),
+        );
+        match &session {
+            Session::Loading { recents, .. } => {
+                assert_eq!(recents, &vec![PathBuf::from("/tmp/old.pdf")]);
+            }
+            other => panic!("expected Loading, got {other:?}"),
+        }
     }
 
     impl std::fmt::Debug for Session {

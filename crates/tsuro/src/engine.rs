@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 
 use pdfium_render::prelude::*;
@@ -39,15 +40,16 @@ enum Request {
 
 impl PdfiumEngine {
     fn bind() -> Result<Pdfium, EngineError> {
-        // Bundle .app carrega a lib de Contents/Frameworks sem depender do cwd.
-        let bundled = bundled_library_path().and_then(|path| Pdfium::bind_to_library(path).ok());
-        let local =
-            || Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path(".")).ok();
-        let bindings = bundled
-            .or_else(local)
-            .or_else(|| Pdfium::bind_to_system_library().ok())
-            .ok_or_else(|| EngineError(PDFIUM_MISSING.into()))?;
-        Ok(Pdfium::new(bindings))
+        // Bundle .app, depois a lib ao lado do binário. Nunca o cwd:
+        // um PDF numa pasta com libpdfium plantada não deve ser carregado.
+        for path in pdfium_library_candidates() {
+            if let Ok(bindings) = Pdfium::bind_to_library(&path) {
+                return Ok(Pdfium::new(bindings));
+            }
+        }
+        Pdfium::bind_to_system_library()
+            .map(Pdfium::new)
+            .map_err(|_| EngineError(PDFIUM_MISSING.into()))
     }
 
     fn call<T>(
@@ -186,18 +188,25 @@ fn page_index(page: PageNo) -> Result<u16, EngineError> {
     u16::try_from(page.index()).map_err(|_| EngineError("página fora do intervalo".into()))
 }
 
-fn bundled_library_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    Some(frameworks_lib_path(exe.as_path()))
+fn pdfium_library_candidates() -> Vec<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .map(|exe| pdfium_candidates_for(&exe))
+        .unwrap_or_default()
 }
 
-fn frameworks_lib_path(exe: &std::path::Path) -> std::path::PathBuf {
-    exe.parent()
-        .map(|dir| {
-            dir.join("../Frameworks")
-                .join(Pdfium::pdfium_platform_library_name())
-        })
-        .unwrap_or_else(|| Pdfium::pdfium_platform_library_name_at_path("."))
+fn pdfium_candidates_for(exe: &Path) -> Vec<PathBuf> {
+    let mut out = vec![frameworks_lib_path(exe)];
+    if let Some(dir) = exe.parent() {
+        out.push(dir.join(Pdfium::pdfium_platform_library_name()));
+    }
+    out
+}
+
+fn frameworks_lib_path(exe: &Path) -> PathBuf {
+    let dir = exe.parent().unwrap_or_else(|| Path::new(""));
+    dir.join("../Frameworks")
+        .join(Pdfium::pdfium_platform_library_name())
 }
 
 fn rgba_from_bitmap(bitmap: &PdfBitmap<'_>) -> Vec<u8> {
@@ -262,7 +271,7 @@ mod tests {
 
     #[test]
     fn frameworks_path_points_at_bundle_lib() {
-        let exe = std::path::Path::new("/Applications/Tsuro.app/Contents/MacOS/tsuro");
+        let exe = Path::new("/Applications/Tsuro.app/Contents/MacOS/tsuro");
         let got = frameworks_lib_path(exe);
         assert_eq!(
             got.parent().and_then(|p| p.file_name()),
@@ -272,6 +281,20 @@ mod tests {
             got.file_name(),
             Some(Pdfium::pdfium_platform_library_name().as_os_str())
         );
+    }
+
+    #[test]
+    fn pdfium_candidates_stay_next_to_the_binary() {
+        let exe = Path::new("/Applications/Tsuro.app/Contents/MacOS/tsuro");
+        let got = pdfium_candidates_for(exe);
+        assert!(got.iter().all(|p| p != Path::new(".") && p.is_absolute()));
+        assert!(got.iter().any(|p| p
+            .parent()
+            .and_then(|d| d.file_name())
+            .is_some_and(|n| n == "Frameworks")));
+        assert!(got
+            .iter()
+            .any(|p| p.parent() == Some(Path::new("/Applications/Tsuro.app/Contents/MacOS"))));
     }
 
     #[test]

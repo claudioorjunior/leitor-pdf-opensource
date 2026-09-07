@@ -1,3 +1,5 @@
+#[cfg(test)]
+#[cfg(test)]
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
@@ -53,8 +55,7 @@ pub fn recents_file() -> PathBuf {
     }
     if cfg!(target_os = "macos") {
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library/Application Support/Tsuro/recents");
+            return PathBuf::from(home).join("Library/Application Support/Tsuro/recents");
         }
     }
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
@@ -110,6 +111,19 @@ pub fn push_recent(mut recents: Vec<PathBuf>, path: PathBuf) -> Vec<PathBuf> {
 pub fn drop_recent(mut recents: Vec<PathBuf>, path: &Path) -> Vec<PathBuf> {
     recents.retain(|p| p != path);
     recents
+}
+
+pub fn merge_recents(primary: Vec<PathBuf>, secondary: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for path in primary.into_iter().chain(secondary) {
+        if !out.contains(&path) {
+            out.push(path);
+        }
+        if out.len() == RECENTS_CAP {
+            break;
+        }
+    }
+    out
 }
 
 pub fn special_folders() -> Vec<FsEntry> {
@@ -242,5 +256,17 @@ mod tests {
             assert_eq!(loaded, recents);
         });
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn merge_recents_keeps_primary_order_then_disk() {
+        let merged = merge_recents(
+            vec![PathBuf::from("/tmp/new.pdf")],
+            vec![PathBuf::from("/tmp/old.pdf"), PathBuf::from("/tmp/new.pdf")],
+        );
+        assert_eq!(
+            merged,
+            vec![PathBuf::from("/tmp/new.pdf"), PathBuf::from("/tmp/old.pdf")]
+        );
     }
 }
