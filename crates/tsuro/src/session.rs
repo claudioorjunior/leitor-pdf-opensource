@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tsuro_sign::{analyze_pdf, PdfAnalysis};
 use iced::clipboard;
 use iced::event::{self, Event};
 use iced::window;
 use iced::Task;
+use tsuro_sign::{analyze_pdf, PdfAnalysis};
 
 use crate::engine::PdfiumEngine;
 use crate::page::{
@@ -84,7 +84,7 @@ impl Search {
         &self.hits
     }
 
-    fn derive(query: &str, pages: &[TextLayer]) -> Self {
+    fn derive(query: &str, pages: &[Option<TextLayer>]) -> Self {
         let needle = query.to_lowercase();
         if needle.is_empty() {
             return Search {
@@ -93,7 +93,8 @@ impl Search {
             };
         }
         let mut hits = Vec::new();
-        for layer in pages {
+        // ponytail: busca cobre paginas carregadas; indexar resto em background se precisar
+        for layer in pages.iter().flatten() {
             let hay = layer.plain.to_lowercase();
             let mut from = 0;
             while let Some(rel) = hay[from..].find(&needle) {
@@ -179,13 +180,15 @@ pub struct Ready {
 }
 
 struct PageCatalog {
-    media: Vec<MediaBox>,
-    text: Vec<TextLayer>,
+    total: u32,
+    media: Vec<Option<MediaBox>>,
+    text: Vec<Option<TextLayer>>,
 }
 
 impl Clone for PageCatalog {
     fn clone(&self) -> Self {
         Self {
+            total: self.total,
             media: self.media.clone(),
             text: self.text.clone(),
         }
@@ -212,13 +215,23 @@ pub enum Message {
     PickFile,
     FileDropped(PathBuf),
     Opened(Result<Ready, OpenError>),
+    PageData {
+        page: PageNo,
+        result: Result<(MediaBox, TextLayer), String>,
+    },
     Close,
     SetPage(PageNo),
     SetZoom(Zoom),
     SetViewport(Viewport),
     SearchChanged(String),
-    PointerDown { page: PageNo, page_pt: [f32; 2] },
-    PointerMove { page: PageNo, page_pt: [f32; 2] },
+    PointerDown {
+        page: PageNo,
+        page_pt: [f32; 2],
+    },
+    PointerMove {
+        page: PageNo,
+        page_pt: [f32; 2],
+    },
     PointerUp,
     CopySelection,
     Rendered {
@@ -268,6 +281,22 @@ impl Session {
             Message::FileDropped(path) => self.begin_open(OpenSource::Dropped(path)),
             Message::Opened(result) => {
                 self.finish_open(result);
+                Task::batch([self.ensure_page_data(), self.ensure_surface()])
+            }
+            Message::PageData { page, result } => {
+                if let Session::Ready(ready) = self {
+                    if let Ok((media, text)) = result {
+                        let i = page.index() as usize;
+                        if i < ready.pages.total as usize {
+                            ready.pages.media[i] = Some(media);
+                            ready.pages.text[i] = Some(text);
+                            let q = ready.search.query().to_string();
+                            if !q.is_empty() {
+                                ready.set_query(q);
+                            }
+                        }
+                    }
+                }
                 self.ensure_surface()
             }
             Message::Close => {
@@ -276,17 +305,17 @@ impl Session {
             }
             Message::SetPage(page) => {
                 if let Session::Ready(ready) = self {
-                    if (page.index() as usize) < ready.pages.media.len() {
+                    if page.index() < ready.pages.total {
                         ready.visible = page;
                     }
                 }
-                self.ensure_surface()
+                Task::batch([self.ensure_page_data(), self.ensure_surface()])
             }
             Message::SetZoom(zoom) => {
                 if let Session::Ready(ready) = self {
                     ready.zoom = zoom;
                 }
-                self.ensure_surface()
+                Task::batch([self.ensure_page_data(), self.ensure_surface()])
             }
             Message::SetViewport(viewport) => {
                 if let Session::Ready(ready) = self {
@@ -301,11 +330,11 @@ impl Session {
                         ready.visible = hit.page;
                     }
                 }
-                self.ensure_surface()
+                Task::batch([self.ensure_page_data(), self.ensure_surface()])
             }
             Message::PointerDown { page, page_pt } => {
                 if let Session::Ready(ready) = self {
-                    if let Some(layer) = ready.pages.text.get(page.index() as usize) {
+                    if let Some(Some(layer)) = ready.pages.text.get(page.index() as usize) {
                         if let Some(i) = layer.hit(page_pt) {
                             let (start, end) = glyph_byte_range(layer, i);
                             ready.selection = Some(Selection {
@@ -321,7 +350,7 @@ impl Session {
                 if let Session::Ready(ready) = self {
                     if let Some(sel) = ready.selection.as_mut() {
                         if sel.page == page {
-                            if let Some(layer) = ready.pages.text.get(page.index() as usize) {
+                            if let Some(Some(layer)) = ready.pages.text.get(page.index() as usize) {
                                 if let Some(i) = layer.hit(page_pt) {
                                     let (start, end) = glyph_byte_range(layer, i);
                                     sel.range.start = sel.range.start.min(start);
@@ -404,18 +433,42 @@ impl Session {
         };
         ready.request_render()
     }
+
+    fn ensure_page_data(&self) -> Task<Message> {
+        let Session::Ready(ready) = self else {
+            return Task::none();
+        };
+        let page = ready.visible;
+        let i = page.index() as usize;
+        let loaded = ready.pages.media.get(i).and_then(|m| *m).is_some()
+            && matches!(ready.pages.text.get(i), Some(Some(_)));
+        if loaded {
+            return Task::none();
+        }
+        let engine = ready.engine.clone();
+        Task::perform(
+            async move {
+                tokio::task::spawn_blocking(move || {
+                    engine.page_data(page).map_err(|e| e.to_string())
+                })
+                .await
+                .map_err(|e| e.to_string())?
+            },
+            move |result| Message::PageData { page, result },
+        )
+    }
 }
 
 impl Ready {
     pub fn page_count(&self) -> u32 {
-        self.pages.media.len() as u32
+        self.pages.total
     }
 
     pub fn media(&self, page: PageNo) -> MediaBox {
         self.pages
             .media
             .get(page.index() as usize)
-            .copied()
+            .and_then(|m| *m)
             .unwrap_or(MediaBox {
                 width: 1.0,
                 height: 1.0,
@@ -435,13 +488,13 @@ impl Ready {
         self.viewport
     }
 
-    pub fn text_layers(&self) -> &[TextLayer] {
-        &self.pages.text
+    pub fn text_layers(&self) -> Vec<&TextLayer> {
+        self.pages.text.iter().flatten().collect()
     }
 
     pub fn selection_plain_text(&self) -> Option<String> {
         let sel = self.selection.as_ref()?;
-        let layer = self.pages.text.get(sel.page.index() as usize)?;
+        let layer = self.pages.text.get(sel.page.index() as usize)?.as_ref()?;
         let sliced = layer.slice(sel.range);
         if sliced.is_empty() {
             None
@@ -462,18 +515,16 @@ impl Ready {
         }
         let engine = self.engine.clone();
         Task::perform(
-            async move { engine.render(page, scale) },
-            move |result| match result {
-                Ok(surface) => Message::Rendered {
-                    page,
-                    scale,
-                    surface,
-                },
-                Err(_) => Message::Rendered {
-                    page,
-                    scale,
-                    surface: empty_surface(page, scale),
-                },
+            async move {
+                match tokio::task::spawn_blocking(move || engine.render(page, scale)).await {
+                    Ok(Ok(surface)) => (page, scale, surface),
+                    _ => (page, scale, empty_surface(page, scale)),
+                }
+            },
+            move |(page, scale, surface)| Message::Rendered {
+                page,
+                scale,
+                surface,
             },
         )
     }
@@ -501,7 +552,7 @@ impl Document {
     fn from_bytes(source: OpenSource, bytes: Arc<[u8]>) -> Result<Ready, OpenError> {
         let engine =
             PdfiumEngine::open(bytes.clone()).map_err(|e| OpenError::Engine(e.to_string()))?;
-        let pages = PageCatalog::extract(&engine)?;
+        let pages = PageCatalog::extract_first(&engine)?;
         let signatures = analyze_pdf(bytes.as_ref()).map_err(|e| OpenError::Sign(e.to_string()))?;
         Ok(Ready {
             source,
@@ -523,29 +574,31 @@ impl Document {
 }
 
 async fn open_ready(source: OpenSource) -> Result<Ready, OpenError> {
-    let bytes = std::fs::read(source.path()).map_err(|e| OpenError::Io(e.to_string()))?;
-    Document::from_bytes(source, Arc::<[u8]>::from(bytes))
+    let bytes = tokio::fs::read(source.path())
+        .await
+        .map_err(|e| OpenError::Io(e.to_string()))?;
+    let bytes = Arc::<[u8]>::from(bytes);
+    // Parse Pdfium + assinaturas fora do executor async: nada aqui pode
+    // bloquear a janela.
+    tokio::task::spawn_blocking(move || Document::from_bytes(source, bytes))
+        .await
+        .map_err(|e| OpenError::Engine(e.to_string()))?
 }
 
 impl PageCatalog {
-    fn extract(engine: &PdfiumEngine) -> Result<Self, OpenError> {
-        let count = engine.page_count();
-        let mut media = Vec::with_capacity(count as usize);
-        let mut text = Vec::with_capacity(count as usize);
-        for i in 0..count {
-            let page = PageNo::from_index(i);
-            media.push(
-                engine
-                    .media(page)
-                    .map_err(|e: EngineError| OpenError::Engine(e.to_string()))?,
-            );
-            text.push(
-                engine
-                    .text_layer(page)
-                    .map_err(|e: EngineError| OpenError::Engine(e.to_string()))?,
-            );
+    // ponytail: abre com a primeira pagina; resto por demanda em PageData
+    fn extract_first(engine: &PdfiumEngine) -> Result<Self, OpenError> {
+        let total = engine.page_count();
+        let mut media: Vec<Option<MediaBox>> = vec![None; total as usize];
+        let mut text: Vec<Option<TextLayer>> = vec![None; total as usize];
+        if total > 0 {
+            let (first_media, first_text) = engine
+                .page_data(PageNo::first())
+                .map_err(|e: EngineError| OpenError::Engine(e.to_string()))?;
+            media[0] = Some(first_media);
+            text[0] = Some(first_text);
         }
-        Ok(PageCatalog { media, text })
+        Ok(PageCatalog { total, media, text })
     }
 }
 
@@ -587,10 +640,27 @@ mod tests {
                 quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
             }],
         };
-        let hits = Search::derive("ação", &[layer.clone()]);
+        let hits = Search::derive("ação", &[Some(layer.clone())]);
         assert_eq!(hits.hits().len(), 1);
-        let none = Search::derive("acao", &[layer]);
+        let none = Search::derive("acao", &[Some(layer)]);
         assert!(none.hits().is_empty());
+    }
+
+    #[test]
+    fn lazy_search_skips_unloaded_pages() {
+        let layer = TextLayer {
+            page: PageNo::first(),
+            plain: "texto ação extra".into(),
+            glyphs: vec![Glyph {
+                cluster: "texto ação extra".into(),
+                quad: Quad::from_rect(0.0, 0.0, 10.0, 10.0),
+            }],
+        };
+        let mut pages: Vec<Option<TextLayer>> = vec![None; 200];
+        pages[0] = Some(layer);
+        let hits = Search::derive("ação", &pages);
+        assert_eq!(hits.hits().len(), 1);
+        assert_eq!(pages.len(), 200);
     }
 
     #[test]
