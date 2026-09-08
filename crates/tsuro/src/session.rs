@@ -948,7 +948,7 @@ impl Ready {
     }
 
     pub fn visible_render_failed(&self) -> bool {
-        let scale = self.zoom.scale(self.viewport, self.media(self.visible));
+        let scale = self.page_scale(self.visible);
         self.failed.contains(&render_key(self.visible, scale))
     }
 
