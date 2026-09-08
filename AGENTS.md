@@ -11,7 +11,10 @@ Antes de propor ou implementar uma mudança, pergunte: isso deixa ler, anotar ou
 - `cargo test -p tsuro` — session, browse, engine
 - `cargo test -p tsuro-sign` — digital signatures
 - `cargo run -p tsuro -- public/samples/guia-folio.pdf` — native viewer
-- `./scripts/bundle-macos.sh` — macOS `.app`
+- `./scripts/bundle-macos.sh` — macOS `.app` + DMG
+- `powershell -File scripts/bundle-windows.ps1` — NSIS CurrentUser
+- `bun run install:tsuro` — instalador provisório (GitHub Releases)
+- `bun run test:install` — plano de install (fixtures, sem rede)
 
 The Tauri/React tree (`src`, `src-tauri`) is legacy. Do not extend it.
 
@@ -23,6 +26,8 @@ The Tauri/React tree (`src`, `src-tauri`) is legacy. Do not extend it.
 - `crates/tsuro/src/view.rs` — chrome
 - `crates/tsuro-sign` — PDF + CMS signature engine
 - `public/samples` — fixture PDFs
+- `scripts/install-tsuro.ts` — instalador Bun (não entra no .app)
+- `.github/workflows/release.yml` — DMG + NSIS no tag `v*`
 
 ## Conventions
 

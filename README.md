@@ -23,7 +23,30 @@ O que ele faz cabe na barra:
 
 Anotações e marcações fazem parte da missão; ainda não estão no visor. O que fica de fora — e deve continuar de fora — é o resto da suíte: formulários, nuvem, impressão, colaboração, qualquer função que não sirva para ler ou marcar.
 
-## Instalar (macOS)
+## Instalar
+
+A forma curta, com [Bun](https://bun.sh/):
+
+```bash
+bun run install:tsuro -- --install
+```
+
+Consulta a última [GitHub Release](https://github.com/claudioorjunior/tsuro-pdf/releases), baixa o artefato do seu sistema e confere o SHA-256. Sem `--install` só baixa. `--check` diz se há versão nova; `--version v0.1.0` pina uma tag.
+
+Ou baixe o arquivo da release:
+
+- **Mac Apple Silicon** — `Tsuro-{versão}-aarch64-apple-darwin.dmg`. Abra o DMG e arraste Tsuro para Applications.
+- **Windows x64** — `Tsuro-{versão}-x86_64-pc-windows-msvc-setup.exe`. Instala em `%LOCALAPPDATA%\Programs\Tsuro`, sem admin. `/S` é a instalação silenciosa.
+
+Ainda não há build para Mac Intel nem Linux.
+
+**Primeira abertura no Mac.** A assinatura é ad-hoc (sem Apple Developer Program). O Gatekeeper avisa: clique com o botão direito em Tsuro → Abrir.
+
+**Primeira abertura no Windows.** Se o SmartScreen aparecer: Mais informações → Executar assim mesmo.
+
+Se ainda não houver release para o seu sistema, o script imprime o caminho de clone e sai com código 1.
+
+### Compilar no Mac
 
 ```bash
 git clone https://github.com/claudioorjunior/tsuro-pdf.git
