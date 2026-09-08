@@ -4,7 +4,7 @@ Leitor de PDF de código aberto. Abre o arquivo, mostra a página, busca o texto
 
 Não é uma suíte. Completo, neste produto, é **ler sem travar**.
 
-![TsuroPDF](public/tsuro-horizontal-pdf.png)
+![TsuroPDF](public/tsuro-horizontal.png)
 
 A marca é um tsuru de três dobras.
 
@@ -100,7 +100,7 @@ Estados que o painel pode mostrar: válida, íntegra (sem confiança pública), 
 crates/tsuro            visor nativo (iced + Pdfium) — o produto
 crates/tsuro-sign       motor de assinaturas (PDF + CMS)
 public/samples          PDFs de exemplo
-public/tsuro-mark.png   marca
+public/tsuro-horizontal.png marca
 src-tauri, src          visor legado (Tauri + React + PDF.js)
 ```
 
