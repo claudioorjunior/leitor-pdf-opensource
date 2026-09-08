@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn frameworks_path_points_at_bundle_lib() {
-        let exe = Path::new("/Applications/Tsuro.app/Contents/MacOS/tsuro");
+        let exe = Path::new("/Applications/TsuroPDF.app/Contents/MacOS/TsuroPDF");
         let got = frameworks_lib_path(exe);
         assert_eq!(
             got.parent().and_then(|p| p.file_name()),
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn pdfium_candidates_stay_next_to_the_binary() {
-        let exe = Path::new("/Applications/Tsuro.app/Contents/MacOS/tsuro");
+        let exe = Path::new("/Applications/TsuroPDF.app/Contents/MacOS/TsuroPDF");
         let got = pdfium_candidates_for(exe);
         assert!(got.iter().all(|p| p != Path::new(".") && p.is_absolute()));
         assert!(got.iter().any(|p| p
@@ -396,7 +396,7 @@ mod tests {
             .is_some_and(|n| n == "Frameworks")));
         assert!(got
             .iter()
-            .any(|p| p.parent() == Some(Path::new("/Applications/Tsuro.app/Contents/MacOS"))));
+            .any(|p| p.parent() == Some(Path::new("/Applications/TsuroPDF.app/Contents/MacOS"))));
     }
 
     #[test]

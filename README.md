@@ -1,16 +1,16 @@
-# Tsuro
+# TsuroPDF
 
 Leitor de PDF de código aberto. Abre o arquivo, mostra a página, busca o texto e verifica assinaturas digitais.
 
 Não é uma suíte. Completo, neste produto, é **ler sem travar**.
 
-![Marca Tsuro](public/tsuro-mark.png)
+![TsuroPDF](public/tsuro-horizontal-pdf.png)
 
 A marca é um tsuru de três dobras.
 
 ## O que é
 
-Tsuro é um leitor nativo para o desktop, escrito em Rust ([iced](https://iced.rs/) + [Pdfium](https://pdfium.googlesource.com/pdfium/)). O alvo é qualquer PDF: grande, com tipografia exigente ou com assinatura digital.
+TsuroPDF é um leitor nativo para o desktop, escrito em Rust ([iced](https://iced.rs/) + [Pdfium](https://pdfium.googlesource.com/pdfium/)). O alvo é qualquer PDF: grande, com tipografia exigente ou com assinatura digital.
 
 O que ele faz cabe na barra:
 
@@ -35,12 +35,12 @@ Consulta a última [GitHub Release](https://github.com/claudioorjunior/tsuro-pdf
 
 Ou baixe o arquivo da release:
 
-- **Mac Apple Silicon** — `Tsuro-{versão}-aarch64-apple-darwin.dmg`. Abra o DMG e arraste Tsuro para Applications.
-- **Windows x64** — `Tsuro-{versão}-x86_64-pc-windows-msvc-setup.exe`. Instala em `%LOCALAPPDATA%\Programs\Tsuro`, sem admin. `/S` é a instalação silenciosa.
+- **Mac Apple Silicon** — `TsuroPDF-{versão}-aarch64-apple-darwin.dmg`. Abra o DMG e arraste TsuroPDF para Applications.
+- **Windows x64** — `TsuroPDF-{versão}-x86_64-pc-windows-msvc-setup.exe`. Instala em `%LOCALAPPDATA%\Programs\TsuroPDF`, sem admin. `/S` é a instalação silenciosa.
 
 Ainda não há build para Mac Intel nem Linux.
 
-**Primeira abertura no Mac.** A assinatura é ad-hoc (sem Apple Developer Program). O Gatekeeper avisa: clique com o botão direito em Tsuro → Abrir.
+**Primeira abertura no Mac.** A assinatura é ad-hoc (sem Apple Developer Program). O Gatekeeper avisa: clique com o botão direito em TsuroPDF → Abrir.
 
 **Primeira abertura no Windows.** Se o SmartScreen aparecer: Mais informações → Executar assim mesmo.
 
@@ -54,7 +54,7 @@ cd tsuro-pdf
 ./scripts/bundle-macos.sh
 ```
 
-Arraste `dist/Tsuro.app` para `/Applications` e abra pelo ícone. O script baixa o Pdfium, compila o visor nativo e monta o `.app`.
+Arraste `dist/TsuroPDF.app` para `/Applications` e abra pelo ícone. O script baixa o Pdfium, compila o visor nativo e monta o `.app`.
 
 ## Requisitos para desenvolver
 
@@ -81,7 +81,7 @@ Há dois PDFs em `public/samples/`:
 | `guia-folio.pdf` | Tipografia, tabela, acentos, busca |
 | `contrato-assinado.pdf` | Campo `/Sig` com certificado autoassinado de demonstração |
 
-O certificado do contrato é **autoassinado**. Tsuro trata isso como assinatura criptograficamente íntegra, mas sem cadeia de confiança pública. O estado esperado é “íntegra (sem confiança pública)”.
+O certificado do contrato é **autoassinado**. TsuroPDF trata isso como assinatura criptograficamente íntegra, mas sem cadeia de confiança pública. O estado esperado é “íntegra (sem confiança pública)”.
 
 ## Assinaturas digitais
 
@@ -104,7 +104,7 @@ public/tsuro-mark.png   marca
 src-tauri, src          visor legado (Tauri + React + PDF.js)
 ```
 
-O legado continua no repositório para consulta. Não é o que se empacota como Tsuro.
+O legado continua no repositório para consulta. Não é o que se empacota como TsuroPDF.
 
 ```bash
 npm install
@@ -115,4 +115,4 @@ npm run tauri dev
 
 ## Licença
 
-[MIT](LICENSE). Contribuições de leitura, verificação e empacotamento são bem-vindas. Tsuro pretende continuar pequeno.
+[MIT](LICENSE). Contribuições de leitura, verificação e empacotamento são bem-vindas. TsuroPDF pretende continuar pequeno.

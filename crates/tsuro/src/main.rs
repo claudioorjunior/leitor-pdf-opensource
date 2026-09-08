@@ -7,7 +7,7 @@ fn main() -> iced::Result {
         Some(path) => Session::open_path(PathBuf::from(path)),
         None => Session::empty(),
     };
-    iced::application("Tsuro", Session::update, Session::view)
+    iced::application("TsuroPDF", Session::update, Session::view)
         .subscription(Session::subscription)
         .run_with(move || boot(session))
 }
