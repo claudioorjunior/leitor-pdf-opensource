@@ -1370,6 +1370,18 @@ mod tests {
     }
 
     #[test]
+    fn close_from_failed_returns_to_empty() {
+        isolated(|| {
+            let mut session = Session::Empty(EmptyState::default());
+            let _ = session.begin_open(OpenSource::Path(PathBuf::from("/tmp/falha.pdf")));
+            session.finish_open(Err(OpenError::Engine("motor quebrou".into())));
+            assert!(matches!(session, Session::Failed { .. }));
+            apply(&mut session, Message::Close);
+            assert!(matches!(session, Session::Empty(_)));
+        });
+    }
+
+    #[test]
     fn dead_recent_drops_after_io_failure() {
         isolated(|| {
             let missing = PathBuf::from("/tmp/tsuro-missing-recent.pdf");
