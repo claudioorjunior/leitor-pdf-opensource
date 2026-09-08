@@ -1,36 +1,75 @@
-# AGENTS.md
+# AGENTS.md — Tsuro PDF
 
-## Mission
+Source of truth for agent instructions in this repo. Do not duplicate in `CLAUDE.md` or Cursor rules — update this file instead.
 
-Tsuro PDF é um leitor de PDF veloz, otimizado e leve, para quem apenas quer ler um PDF e fazer anotações e marcações, sem funções complicadas ou desnecessárias.
+## Mission gate
 
-Antes de propor ou implementar uma mudança, pergunte: isso deixa ler, anotar ou marcar mais rápido, mais leve ou mais claro? Se a resposta for um recurso fora disso — suíte, nuvem, formulário, impressão, colaboração — recuse ou adie.
+Tsuro PDF é um leitor de PDF veloz, otimizado e leve: ler, anotar, marcar. Nada além disso.
 
-## Commands
+Antes de propor ou implementar uma mudança, pergunte: isso deixa ler, anotar ou marcar mais rápido, mais leve ou mais claro? Recurso fora disso — suíte, nuvem, formulário, impressão, colaboração — recuse ou adie.
 
-- `cargo test -p tsuro` — session, browse, engine
+## Blast radius first
+
+- `src/`, `src-tauri/` are legacy (Tauri/React). NEVER extend. Bugfix only with explicit permission.
+- NEVER hand-roll crypto. Signatures live in `crates/tsuro-sign` (CMS engine over `rsa`/`x509-parser`); use it, don't reimplement.
+- Fixtures in `public/samples/` (`guia-folio.pdf`, `contrato-assinado.pdf`) are read-only test inputs. NEVER overwrite — regenerate via `scripts/generate_samples.py`.
+
+## Stack
+
+Rust edition 2021, stable toolchain (`rust-toolchain.toml`). Viewer: `iced 0.13` + `pdfium-render 0.8` (needs `libpdfium.dylib` at runtime — `PDFIUM_MISSING` in `engine.rs`).
+
+## Commands (exact)
+
+- `cargo test -p tsuro` — session, browse, engine (run before every PR)
 - `cargo test -p tsuro-sign` — digital signatures
-- `cargo run -p tsuro -- public/samples/guia-folio.pdf` — native viewer
-- `./scripts/bundle-macos.sh` — macOS `.app` + DMG
+- `cargo run -p tsuro -- public/samples/guia-folio.pdf` — manual check
+- `./scripts/bundle-macos.sh` — macOS `.app`
 - `powershell -File scripts/bundle-windows.ps1` — NSIS CurrentUser
 - `bun run install:tsuro` — instalador provisório (GitHub Releases)
 - `bun run test:install` — plano de install (fixtures, sem rede)
 
-The Tauri/React tree (`src`, `src-tauri`) is legacy. Do not extend it.
+## Code map (where new code goes)
 
-## Code Map
-
-- `crates/tsuro` — iced + Pdfium viewer (the product)
-- `crates/tsuro/src/session.rs` — document session, messages, panels
-- `crates/tsuro/src/browse.rs` — empty-state folders and recents
-- `crates/tsuro/src/view.rs` — chrome
-- `crates/tsuro-sign` — PDF + CMS signature engine
-- `public/samples` — fixture PDFs
-- `scripts/install-tsuro.ts` — instalador Bun (não entra no .app)
+- `crates/tsuro/src/session.rs` — session state (`Session`, `Message`, `OpenSource`, `Theme`); nothing visual here
+- `crates/tsuro/src/view.rs` — chrome only; no state
+- `crates/tsuro/src/browse.rs` — empty-state folders, recents, `EmptyState.theme` (`EmptyState`, `FsEntry`)
+- `crates/tsuro/src/page.rs` — public PDF types (`PageNo`, `MediaBox`, `Bitmap`, `TextLayer`)
+- `crates/tsuro/src/engine.rs` — `pub(crate)` Pdfium worker (thread + channel); stays private to the crate
+- `crates/tsuro/src/kiri.rs` — Kiri tokens + chrome styles (`Theme`, `Tokens`, `status_dot_color`); icons Ori in `assets/icons/ori/`
+- `crates/tsuro/src/prefs.rs` — `theme=dark|light` prefs file (mirrors `recents_file()` pattern)
+- `crates/tsuro-sign/` — PDF + CMS signature engine (`SigError`, `CertificateInfo`)
+- `scripts/install-tsuro.ts` — instalador Bun (não entra no `.app`)
 - `.github/workflows/release.yml` — DMG + NSIS no tag `v*`
+- New viewer code → `crates/tsuro/...`; new signature code → `crates/tsuro-sign/...`. NEVER in the legacy tree.
 
-## Conventions
+## Style (example beats prose)
 
-- Use `use` and `pub` with `crate::` paths.
-- Keep chrome in `view.rs`; session state stays in `session.rs`.
-- Completo = ler e marcar sem travar. New work must stay small.
+- `use`/`pub` via `crate::` paths; engine internals stay `pub(crate)`:
+
+  ```rust
+  // ✅ Good
+  use crate::page::PageNo;
+  use crate::session::{Message, Session};
+  pub(crate) mod engine;
+
+  // ❌ Bad
+  use super::page::PageNo;      // no super:: imports
+  pub mod engine;               // engine is crate-internal, not public API
+  ```
+
+- `PageNo` is 0-based (`PageNo::first()` = index 0). Don't invent 1-based page math.
+- Chrome in `view.rs`; state in `session.rs`. Small diffs; no new deps without asking.
+
+## Boundaries
+
+- ✅ Always: run `cargo test -p tsuro` before opening a PR; reproduce bugs with a fixture PDF first.
+- ⚠️ Ask first: new dependencies, changes under `crates/tsuro-sign/`, touching the legacy tree.
+- 🚫 Never: commit secrets/keys, modify fixtures by hand, `git push --force`.
+
+## Verify, don't assume
+
+Before referencing any function, read its defining file in this session. Citations without preceding reads are drafts to verify.
+
+## Mistake journal
+
+- 2026-09-08: edit ranges guessed from stale line numbers ate struct fields (`Ready.selection`, enum brace) → re-read the exact region before every edit; one op per patch per file unless bodies are exact snapshot lines.
