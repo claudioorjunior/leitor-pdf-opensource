@@ -39,6 +39,7 @@ if ($LASTEXITCODE -ne 0) { throw "cargo build falhou" }
 
 Copy-Item "$Root\target\release\TsuroPDF.exe" "$WinDir\TsuroPDF.exe" -Force
 Copy-Item $PdfiumDll "$WinDir\pdfium.dll" -Force
+Copy-Item "$Root\scripts\windows\TsuroPDF.ico" "$WinDir\TsuroPDF.ico" -Force
 Copy-Item "$Root\LICENSE" "$WinDir\LICENSE" -Force
 
 $Makensis = $null
