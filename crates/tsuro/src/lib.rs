@@ -1,5 +1,7 @@
 pub mod browse;
+pub mod kiri;
 pub mod page;
+pub mod prefs;
 pub mod session;
 pub mod view;
 

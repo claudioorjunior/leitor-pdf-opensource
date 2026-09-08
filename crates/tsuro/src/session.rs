@@ -14,9 +14,11 @@ use crate::browse::{
     push_recent, read_recents, save_recents, EmptyState, FsEntry,
 };
 use crate::engine::PdfiumEngine;
+use crate::kiri::Theme;
 use crate::page::{
     EngineError, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer, Viewport,
 };
+use crate::prefs::{read_theme, save_theme};
 
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
 pub(crate) const THUMB_ROW: f32 = 156.0;
@@ -173,6 +175,7 @@ pub enum Session {
         source: OpenSource,
         recents: Vec<PathBuf>,
         gen: u64,
+        theme: Theme,
     },
     Ready(Ready),
     Failed {
@@ -180,6 +183,7 @@ pub enum Session {
         message: String,
         recents: Vec<PathBuf>,
         gen: u64,
+        theme: Theme,
     },
 }
 
@@ -196,6 +200,10 @@ pub struct Ready {
     pub selection: Option<Selection>,
     pub signatures_open: bool,
     pub pages_open: bool,
+    /// Tema Kiri — sobrevive a `begin_open`/`finish_open`/`close_document`.
+    pub theme: Theme,
+    /// Menu ⋯ aberto. Só existe em `Ready`; zera ao trocar de documento.
+    pub overflow_open: bool,
     pub pages_scroll_y: f32,
     recents: Vec<PathBuf>,
     open_gen: u64,
@@ -283,6 +291,8 @@ pub enum Message {
     },
     ToggleSignatures,
     TogglePages,
+    ToggleOverflow,
+    SetTheme(Theme),
     PagesScrolled(f32),
     BrowseTo(Option<PathBuf>),
     ListingReady {
@@ -305,7 +315,10 @@ pub enum OpenError {
 
 impl Session {
     pub fn empty() -> Self {
-        Session::Empty(EmptyState::default())
+        Session::Empty(EmptyState {
+            theme: read_theme(),
+            ..EmptyState::default()
+        })
     }
 
     pub fn open_path(path: PathBuf) -> Self {
@@ -313,6 +326,7 @@ impl Session {
             source: OpenSource::Path(path),
             recents: read_recents(),
             gen: 1,
+            theme: read_theme(),
         }
     }
 
@@ -386,6 +400,7 @@ impl Session {
             Message::SetZoom(zoom) => {
                 if let Session::Ready(ready) = self {
                     ready.zoom = zoom;
+                    ready.overflow_open = false;
                 }
                 self.ready_followup()
             }
@@ -437,6 +452,7 @@ impl Session {
             Message::PointerUp => Task::none(),
             Message::CopySelection => {
                 if let Session::Ready(ready) = self {
+                    ready.overflow_open = false;
                     if let Some(text) = ready.selection_plain_text() {
                         return clipboard::write(text);
                     }
@@ -501,6 +517,18 @@ impl Session {
                 }
                 Task::batch(tasks)
             }
+            Message::ToggleOverflow => {
+                if let Session::Ready(ready) = self {
+                    ready.overflow_open = !ready.overflow_open;
+                }
+                Task::none()
+            }
+            Message::SetTheme(theme) => {
+                self.set_theme(theme);
+                self.close_overflow();
+                let _ = save_theme(theme);
+                Task::none()
+            }
             Message::PagesScrolled(y) => {
                 if let Session::Ready(ready) = self {
                     ready.pages_scroll_y = y;
@@ -549,7 +577,7 @@ impl Session {
     }
 
     pub fn view(&self) -> iced::Element<'_, Message> {
-        crate::view::chrome(self)
+        crate::view::chrome(self, self.theme())
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
@@ -557,7 +585,7 @@ impl Session {
             Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
             Event::Window(window::Event::Resized(size)) => Some(Message::SetViewport(Viewport {
                 width: size.width,
-                height: (size.height - 96.0).max(1.0),
+                height: (size.height - crate::view::CHROME_HEIGHT).max(1.0),
             })),
             _ => None,
         })
@@ -565,6 +593,7 @@ impl Session {
 
     pub fn begin_open(&mut self, source: OpenSource) -> Task<Message> {
         let recents = self.recents();
+        let theme = self.theme();
         let mut gen = self.open_gen().wrapping_add(1);
         if gen == 0 {
             gen = 1;
@@ -573,6 +602,7 @@ impl Session {
             source: source.clone(),
             recents,
             gen,
+            theme,
         };
         Task::perform(open_ready(source), move |result| Message::Opened {
             gen,
@@ -593,16 +623,19 @@ impl Session {
             _ => return,
         }
         let recents = merge_recents(self.recents(), read_recents());
+        let theme = self.theme();
         match result {
             Ok(mut ready) => {
                 let path = ready.source.path().to_path_buf();
                 let recents = push_recent(recents, path);
                 let _ = save_recents(&recents);
                 ready.recents = recents;
+                ready.theme = theme;
                 ready.open_gen = gen;
                 ready.signatures_open = false;
                 ready.pages_open = false;
                 ready.pages_scroll_y = 0.0;
+                ready.overflow_open = false;
                 *self = Session::Ready(ready);
             }
             Err(err) => {
@@ -622,6 +655,7 @@ impl Session {
                     message: err.to_string(),
                     recents,
                     gen,
+                    theme,
                 };
             }
         }
@@ -629,9 +663,11 @@ impl Session {
 
     fn close_document(&mut self) -> Task<Message> {
         let recents = self.recents();
+        let theme = self.theme();
         let open_gen = self.open_gen();
         *self = Session::Empty(EmptyState {
             recents,
+            theme,
             open_gen,
             ..EmptyState::default()
         });
@@ -643,6 +679,27 @@ impl Session {
             Session::Empty(empty) => empty.recents.clone(),
             Session::Loading { recents, .. } | Session::Failed { recents, .. } => recents.clone(),
             Session::Ready(ready) => ready.recents.clone(),
+        }
+    }
+    pub fn theme(&self) -> Theme {
+        match self {
+            Session::Empty(empty) => empty.theme,
+            Session::Loading { theme, .. } | Session::Failed { theme, .. } => *theme,
+            Session::Ready(ready) => ready.theme,
+        }
+    }
+
+    fn set_theme(&mut self, theme: Theme) {
+        match self {
+            Session::Empty(empty) => empty.theme = theme,
+            Session::Loading { theme: t, .. } | Session::Failed { theme: t, .. } => *t = theme,
+            Session::Ready(ready) => ready.theme = theme,
+        }
+    }
+
+    fn close_overflow(&mut self) {
+        if let Session::Ready(ready) = self {
+            ready.overflow_open = false;
         }
     }
 
@@ -892,6 +949,8 @@ impl Document {
             pages_open: false,
             pages_scroll_y: 0.0,
             recents: Vec::new(),
+            theme: Theme::Dark,
+            overflow_open: false,
             open_gen: 0,
             surfaces: SurfaceCache::default(),
             thumbs: SurfaceCache::default(),
@@ -1299,6 +1358,7 @@ mod tests {
             source: OpenSource::Path(PathBuf::from("/tmp/direct.pdf")),
             recents: Vec::new(),
             gen: 1,
+            theme: Theme::Dark,
         };
         apply(
             &mut session,
@@ -1435,5 +1495,66 @@ mod tests {
         let path = sample_pdf();
         let bytes = std::fs::read(&path).ok()?;
         Document::from_bytes(OpenSource::Path(path), Arc::<[u8]>::from(bytes)).ok()
+    }
+
+    #[test]
+    fn set_theme_updates_state_and_persists() {
+        let prefs =
+            std::env::temp_dir().join(format!("tsuro-prefs-unit-{}-theme", std::process::id()));
+        crate::prefs::with_prefs_path(prefs.clone(), || {
+            let _ = std::fs::remove_file(&prefs);
+            let mut session = Session::empty();
+            assert_eq!(session.theme(), Theme::Dark);
+            apply(&mut session, Message::SetTheme(Theme::Light));
+            assert_eq!(session.theme(), Theme::Light);
+            assert_eq!(crate::prefs::read_theme(), Theme::Light);
+            assert_eq!(Session::empty().theme(), Theme::Light);
+            apply(&mut session, Message::SetTheme(Theme::Dark));
+            assert_eq!(crate::prefs::read_theme(), Theme::Dark);
+        });
+        let _ = std::fs::remove_file(&prefs);
+    }
+
+    #[test]
+    fn theme_survives_open_overflow_and_close() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Empty(EmptyState {
+            theme: Theme::Light,
+            ..EmptyState::default()
+        });
+        let _ = session.begin_open(OpenSource::Path(sample_pdf()));
+        let gen = match &session {
+            Session::Loading { gen, .. } => *gen,
+            other => panic!("expected Loading, got {other:?}"),
+        };
+        assert_eq!(session.theme(), Theme::Light);
+        let _ = session.update(Message::Opened {
+            gen,
+            result: Ok(ready),
+        });
+        let Session::Ready(r) = &session else {
+            panic!("expected Ready");
+        };
+        assert_eq!(r.theme, Theme::Light);
+        assert!(!r.overflow_open);
+        apply(&mut session, Message::ToggleOverflow);
+        let Session::Ready(r) = &session else {
+            panic!("expected Ready");
+        };
+        assert!(r.overflow_open);
+        apply(&mut session, Message::SetZoom(Zoom::Width));
+        let Session::Ready(r) = &session else {
+            panic!("expected Ready");
+        };
+        assert!(!r.overflow_open);
+        apply(&mut session, Message::Close);
+        match &session {
+            Session::Empty(empty) => assert_eq!(empty.theme, Theme::Light),
+            other => panic!("expected Empty, got {other:?}"),
+        }
+        apply(&mut session, Message::ToggleOverflow);
+        assert!(matches!(session, Session::Empty(_)));
     }
 }
