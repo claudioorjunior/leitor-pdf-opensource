@@ -4,7 +4,7 @@ Leitor de PDF de código aberto. Abre o arquivo, mostra a página, busca o texto
 
 Não é uma suíte. Completo, neste produto, é **ler sem travar**.
 
-![Marca TsuroPDF](public/tsuro-mark.png)
+![TsuroPDF](public/tsuro-horizontal-pdf.png)
 
 A marca é um tsuru de três dobras.
 

@@ -16,6 +16,8 @@ $Out = Join-Path $Root "dist\TsuroPDF-$Version-x86_64-pc-windows-msvc-setup.exe"
 Remove-Item "$Root\dist\Tsuro-*-setup.exe" -Force -ErrorAction SilentlyContinue
 
 New-Item -ItemType Directory -Force -Path $WinDir | Out-Null
+# Staging limpa: build anterior deixava tsuro.exe legado ao lado do binário novo.
+Remove-Item (Join-Path $WinDir "*") -Recurse -Force -ErrorAction SilentlyContinue
 
 $PdfiumDll = Join-Path $Root "pdfium.dll"
 if (-not (Test-Path $PdfiumDll)) {
