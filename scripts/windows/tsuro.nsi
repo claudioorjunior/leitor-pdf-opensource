@@ -17,6 +17,9 @@ Unicode true
 Name "TsuroPDF ${VERSION}"
 OutFile "${OUT}"
 InstallDir "$LOCALAPPDATA\Programs\TsuroPDF"
+Icon "${SRC}\TsuroPDF.ico"
+!define MUI_ICON "${SRC}\TsuroPDF.ico"
+!define MUI_UNICON "${SRC}\TsuroPDF.ico"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
 AllowRootDirInstall false
@@ -33,9 +36,10 @@ Section "TsuroPDF" SecApp
   SetOutPath "$INSTDIR"
   File "${SRC}\TsuroPDF.exe"
   File "${SRC}\pdfium.dll"
+  File "${SRC}\TsuroPDF.ico"
   File /oname=LICENSE.txt "${SRC}\LICENSE"
   CreateDirectory "$SMPROGRAMS"
-  CreateShortCut "$SMPROGRAMS\TsuroPDF.lnk" "$INSTDIR\TsuroPDF.exe"
+  CreateShortCut "$SMPROGRAMS\TsuroPDF.lnk" "$INSTDIR\TsuroPDF.exe" "" "$INSTDIR\TsuroPDF.ico"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\TsuroPDF" "DisplayName" "TsuroPDF"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\TsuroPDF" "DisplayVersion" "${VERSION}"
@@ -47,6 +51,7 @@ SectionEnd
 Section "Uninstall"
   Delete "$INSTDIR\TsuroPDF.exe"
   Delete "$INSTDIR\pdfium.dll"
+  Delete "$INSTDIR\TsuroPDF.ico"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\Uninstall.exe"
   Delete "$SMPROGRAMS\TsuroPDF.lnk"
