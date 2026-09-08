@@ -34,6 +34,13 @@ cargo build --release -p tsuro --manifest-path "$ROOT/Cargo.toml"
 
 # 3. Ícone a partir da marca (tsuru).
 rm -rf "$APP"
+# Nomes legados do rename (o build anterior gerava Tsuro.app): nunca reinstalar o app antigo.
+# `Tsuro-*.dmg` não casa `TsuroPDF-*.dmg` (após "Tsuro" vem "P", não "-").
+# Guardado: sem legado em disco o glob não expande e o `set -e` abortaria o rm.
+for legacy in "$ROOT/dist/Tsuro.app" $ROOT/dist/Tsuro-*.dmg; do
+  [ -e "$legacy" ] || continue
+  rm -rf "$legacy"
+done
 mkdir -p "$APP/Contents/Resources"
 if python3 -c "import PIL.Image" 2>/dev/null; then
   python3 - "$ROOT/public/tsuro-mark.png" "$APP/Contents/Resources/TsuroPDF.icns" <<'PY_EOF'
@@ -55,7 +62,7 @@ fi
 
 # 4. Bundle.
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks"
-cp "$ROOT/target/release/tsuro" "$APP/Contents/MacOS/tsuro"
+cp "$ROOT/target/release/TsuroPDF" "$APP/Contents/MacOS/TsuroPDF"
 cp "$ROOT/libpdfium.dylib" "$APP/Contents/Frameworks/"
 cat >"$APP/Contents/Info.plist" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -63,7 +70,7 @@ cat >"$APP/Contents/Info.plist" <<PLIST_EOF
 <plist version="1.0">
 <dict>
   <key>CFBundleExecutable</key>
-  <string>tsuro</string>
+  <string>TsuroPDF</string>
   <key>CFBundleIdentifier</key>
   <string>dev.tsuro.reader</string>
   <key>CFBundleName</key>

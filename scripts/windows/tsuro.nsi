@@ -31,11 +31,11 @@ AllowRootDirInstall false
 
 Section "TsuroPDF" SecApp
   SetOutPath "$INSTDIR"
-  File "${SRC}\tsuro.exe"
+  File "${SRC}\TsuroPDF.exe"
   File "${SRC}\pdfium.dll"
   File /oname=LICENSE.txt "${SRC}\LICENSE"
   CreateDirectory "$SMPROGRAMS"
-  CreateShortCut "$SMPROGRAMS\TsuroPDF.lnk" "$INSTDIR\tsuro.exe"
+  CreateShortCut "$SMPROGRAMS\TsuroPDF.lnk" "$INSTDIR\TsuroPDF.exe"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\TsuroPDF" "DisplayName" "TsuroPDF"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\TsuroPDF" "DisplayVersion" "${VERSION}"
@@ -45,7 +45,7 @@ Section "TsuroPDF" SecApp
 SectionEnd
 
 Section "Uninstall"
-  Delete "$INSTDIR\tsuro.exe"
+  Delete "$INSTDIR\TsuroPDF.exe"
   Delete "$INSTDIR\pdfium.dll"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\Uninstall.exe"
