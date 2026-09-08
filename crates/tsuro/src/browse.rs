@@ -2,6 +2,8 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
+use crate::kiri::Theme;
+
 pub const RECENTS_CAP: usize = 12;
 
 #[cfg(test)]
@@ -28,6 +30,8 @@ pub struct EmptyState {
     pub recents: Vec<PathBuf>,
     /// Última geração de `Opened`; sobrevive ao Close para recusar resultado atrasado.
     pub open_gen: u64,
+    /// Tema Kiri — `Default` é Dark; `Session::empty()` carrega do prefs.
+    pub theme: Theme,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

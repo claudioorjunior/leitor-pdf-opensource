@@ -1,3 +1,6 @@
+# Session handoffs (local continuity notes, never commit)
+.handoff/
+
 # Logs
 logs
 *.log
