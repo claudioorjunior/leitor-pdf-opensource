@@ -67,9 +67,9 @@ cat >"$APP/Contents/Info.plist" <<PLIST_EOF
   <key>CFBundleIdentifier</key>
   <string>dev.tsuro.reader</string>
   <key>CFBundleName</key>
-  <string>Tsuro</string>
+  <string>TsuroPDF</string>
   <key>CFBundleDisplayName</key>
-  <string>Tsuro</string>
+  <string>TsuroPDF</string>
   <key>CFBundleIconFile</key>
   <string>Tsuro</string>
   <key>CFBundleVersion</key>
