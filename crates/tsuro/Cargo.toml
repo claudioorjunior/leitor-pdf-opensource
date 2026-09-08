@@ -6,7 +6,7 @@ license = "MIT"
 description = "TsuroPDF, leitor de PDF nativo (iced)"
 
 [[bin]]
-name = "tsuro"
+name = "TsuroPDF"
 path = "src/main.rs"
 
 [dependencies]
