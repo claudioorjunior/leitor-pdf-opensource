@@ -15,6 +15,7 @@ target
 
 # Native PDF engine (dev convenience: README asks for Pdfium in cwd or system)
 libpdfium.*
+pdfium.dll
 
 # Editor directories and files
 .vscode/*
