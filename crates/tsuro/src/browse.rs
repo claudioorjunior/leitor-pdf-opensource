@@ -32,6 +32,8 @@ pub struct EmptyState {
     pub open_gen: u64,
     /// Tema Kiri — `Default` é Dark; `Session::empty()` carrega do prefs.
     pub theme: Theme,
+    /// DPR da janela; 0.0 (`Default`) = desconhecido, `page_scale` trata como 1.0.
+    pub render_scale: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
