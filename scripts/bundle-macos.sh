@@ -87,7 +87,9 @@ cat >"$APP/Contents/Info.plist" <<PLIST_EOF
 PLIST_EOF
 
 # Ad-hoc + runtime: sem Apple Developer Program. Gatekeeper pede "Abrir" na 1ª vez.
-codesign -s - --force --deep --options runtime "$APP"
+# Entitlement dispensa Library Validation da libpdfium (ad-hoc gera Team IDs
+# distintos por binário; sem isto o kernel rejeita a dylib em Frameworks).
+codesign -s - --force --deep --options runtime --entitlements "$ROOT/scripts/tsuro.entitlements" "$APP"
 
 # 5. DMG com atalho para /Applications (evita zip → App Translocation).
 STAGE="$(mktemp -d)/Tsuro"
