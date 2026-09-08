@@ -2,8 +2,8 @@
   "tag_name": "v0.1.0",
   "assets": [
     {
-      "name": "Tsuro-aarch64-apple-darwin.dmg",
-      "browser_download_url": "https://github.com/claudioorjunior/tsuro-pdf/releases/download/v0.1.0/Tsuro-aarch64-apple-darwin.dmg"
+      "name": "TsuroPDF-aarch64-apple-darwin.dmg",
+      "browser_download_url": "https://github.com/claudioorjunior/tsuro-pdf/releases/download/v0.1.0/TsuroPDF-aarch64-apple-darwin.dmg"
     }
   ]
 }

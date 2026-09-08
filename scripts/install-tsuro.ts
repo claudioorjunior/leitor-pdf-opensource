@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Instalador provisório do Tsuro (Bun). Não entra no .app.
+ * Instalador provisório do TsuroPDF (Bun). Não entra no .app.
  *
  * Flags (inglês): --check  --install  --version v0.2.0
  * Mensagens: português.
@@ -166,7 +166,7 @@ async function run(cmd: string[], cwd?: string): Promise<void> {
 }
 
 async function findApp(root: string): Promise<string> {
-  const glob = new Bun.Glob("**/Tsuro.app");
+  const glob = new Bun.Glob("**/TsuroPDF.app");
   for await (const match of glob.scan({ cwd: root, onlyFiles: false })) {
     const path = join(root, match);
     if (isTranslocated(path)) {
@@ -176,7 +176,7 @@ async function findApp(root: string): Promise<string> {
     }
     return path;
   }
-  throw new Error("O DMG não contém Tsuro.app.");
+  throw new Error("O DMG não contém TsuroPDF.app.");
 }
 
 async function installMac(dmg: string): Promise<void> {
