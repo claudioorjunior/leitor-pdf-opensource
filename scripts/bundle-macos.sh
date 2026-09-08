@@ -42,22 +42,26 @@ for legacy in "$ROOT/dist/Tsuro.app" $ROOT/dist/Tsuro-*.dmg; do
   rm -rf "$legacy"
 done
 mkdir -p "$APP/Contents/Resources"
-if python3 -c "import PIL.Image" 2>/dev/null; then
-  python3 - "$ROOT/public/tsuro-mark.png" "$APP/Contents/Resources/TsuroPDF.icns" <<'PY_EOF'
-import sys
-from PIL import Image
-Image.open(sys.argv[1]).save(sys.argv[2])
-PY_EOF
-else
+ICON_MASTER="$ROOT/public/tsuro-app-icon-1024.png"
+if command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
   ICONSET="$(mktemp -d)/TsuroPDF.iconset"
   mkdir -p "$ICONSET"
   SIZES="16:icon_16x16 32:icon_16x16@2x 32:icon_32x32 64:icon_32x32@2x 128:icon_128x128 256:icon_128x128@2x 256:icon_256x256 512:icon_256x256@2x 512:icon_512x512 1024:icon_512x512@2x"
   for spec in $SIZES; do
     size="${spec%%:*}"
     name="${spec##*:}"
-    sips -z "$size" "$size" "$ROOT/public/tsuro-mark.png" --out "$ICONSET/$name.png" >/dev/null
+    sips -z "$size" "$size" "$ICON_MASTER" --out "$ICONSET/$name.png" >/dev/null
   done
   iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/TsuroPDF.icns"
+  rm -rf "$ICONSET"
+elif python3 -c "import PIL.Image" 2>/dev/null; then
+  python3 - "$ICON_MASTER" "$APP/Contents/Resources/TsuroPDF.icns" <<'PY_EOF'
+import sys
+from PIL import Image
+Image.open(sys.argv[1]).save(sys.argv[2])
+PY_EOF
+else
+  echo "aviso: sem sips/iconutil nem PIL — app sem ícone" >&2
 fi
 
 # 4. Bundle.
