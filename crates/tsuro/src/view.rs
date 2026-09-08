@@ -486,9 +486,9 @@ fn empty_browser(empty: &EmptyState, t: Tokens) -> Element<'_, Message> {
         container(
             column![
                 image(image::Handle::from_bytes(
-                    &include_bytes!("../../../public/tsuro-mark.png")[..],
+                    &include_bytes!("../../../public/tsuro-horizontal.png")[..],
                 ))
-                .width(Length::Fixed(120.0)),
+                .width(Length::Fixed(200.0)),
                 text("Abra um PDF ou arraste para cá")
                     .size(14)
                     .color(t.muted),
