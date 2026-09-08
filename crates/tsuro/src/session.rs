@@ -246,6 +246,15 @@ impl SurfaceCache {
         self.entries.get(&(page.index(), scale.key()))
     }
 
+    /// Stale-while-revalidate: devolve qualquer bitmap da página visível
+    /// enquanto o render da nova escala não chega (troca de zoom/viewport).
+    fn fallback_for_page(&self, page: PageNo) -> Option<&PageSurface> {
+        self.entries
+            .iter()
+            .find(|((p, _), _)| *p == page.index())
+            .map(|(_, surface)| surface)
+    }
+
     fn insert(&mut self, page: PageNo, scale: Scale, surface: PageSurface) {
         self.entries.insert((page.index(), scale.key()), surface);
     }
@@ -945,6 +954,7 @@ impl Ready {
     pub fn visible_surface(&self) -> Option<&PageSurface> {
         let scale = self.page_scale(self.visible);
         self.surface(self.visible, scale)
+            .or_else(|| self.surfaces.fallback_for_page(self.visible))
     }
 
     pub fn visible_render_failed(&self) -> bool {
@@ -1189,6 +1199,44 @@ mod tests {
         };
         let scale = Zoom::Width.scale(viewport, media);
         assert!((scale.factor() - 2.0).abs() < 0.002);
+    }
+
+    #[test]
+    fn zoom_change_keeps_old_bitmap_until_rerender() {
+        // Tela não apaga ao trocar o zoom: visible_surface devolve o bitmap
+        // da escala antiga até o render da nova chegar.
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let page = ready.visible;
+        let old_scale = ready.page_scale(page);
+        ready
+            .surfaces
+            .insert(page, old_scale, fake_surface(page, old_scale));
+        assert!(ready.visible_surface().is_some());
+        // Nova escala sem render: o cache não tem a chave exata…
+        ready.render_scale = 2.0;
+        let new_scale = ready.page_scale(page);
+        assert_ne!(new_scale, old_scale);
+        assert!(ready.surface(page, new_scale).is_none());
+        // …mas a tela segue mostrando o bitmap antigo.
+        assert!(ready.visible_surface().is_some());
+    }
+
+    fn fake_surface(page: PageNo, scale: Scale) -> PageSurface {
+        PageSurface {
+            bitmap: crate::page::Bitmap {
+                width: 2,
+                height: 2,
+                rgba: vec![0; 16],
+            },
+            text: TextLayer {
+                page,
+                plain: String::new(),
+                glyphs: Vec::new(),
+            },
+            scale,
+        }
     }
 
     #[test]
