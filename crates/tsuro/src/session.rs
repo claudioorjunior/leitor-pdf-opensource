@@ -176,6 +176,8 @@ pub enum Session {
         recents: Vec<PathBuf>,
         gen: u64,
         theme: Theme,
+        /// DPR da janela (1.0 = sem Retina). Via `WindowScale`, como o tema.
+        render_scale: f32,
     },
     Ready(Ready),
     Failed {
@@ -184,6 +186,8 @@ pub enum Session {
         recents: Vec<PathBuf>,
         gen: u64,
         theme: Theme,
+        /// DPR da janela (1.0 = sem Retina). Via `WindowScale`, como o tema.
+        render_scale: f32,
     },
 }
 
@@ -206,6 +210,8 @@ pub struct Ready {
     pub overflow_open: bool,
     pub pages_scroll_y: f32,
     recents: Vec<PathBuf>,
+    /// DPR da janela: bitmap sai em px físicos (zoom CSS × isto).
+    pub render_scale: f32,
     open_gen: u64,
     surfaces: SurfaceCache,
     thumbs: SurfaceCache,
@@ -293,6 +299,14 @@ pub enum Message {
     TogglePages,
     ToggleOverflow,
     SetTheme(Theme),
+    /// Janela informou tamanho + identidade: ajusta viewport e reconsulta o DPR.
+    WindowMetrics {
+        width: f32,
+        height: f32,
+        id: window::Id,
+    },
+    /// Densidade da janela (device pixels por px CSS). 1.0 = sem Retina.
+    WindowScale(f32),
     PagesScrolled(f32),
     BrowseTo(Option<PathBuf>),
     ListingReady {
@@ -317,6 +331,7 @@ impl Session {
     pub fn empty() -> Self {
         Session::Empty(EmptyState {
             theme: read_theme(),
+            render_scale: 1.0,
             ..EmptyState::default()
         })
     }
@@ -327,6 +342,7 @@ impl Session {
             recents: read_recents(),
             gen: 1,
             theme: read_theme(),
+            render_scale: 1.0,
         }
     }
 
@@ -410,6 +426,23 @@ impl Session {
                 }
                 self.ensure_surface()
             }
+            Message::WindowMetrics { width, height, id } => {
+                if let Session::Ready(ready) = self {
+                    ready.viewport = Viewport { width, height };
+                }
+                Task::batch([self.ensure_surface(), query_window_scale(id)])
+            }
+            Message::WindowScale(scale) => {
+                if !scale.is_finite() || scale < 1.0 {
+                    return Task::none();
+                }
+                let scale = scale.min(4.0);
+                if (self.render_scale() - scale).abs() < 0.001 {
+                    return Task::none();
+                }
+                self.set_render_scale(scale);
+                self.ensure_surface()
+            }
             Message::SearchChanged(query) => {
                 if let Session::Ready(ready) = self {
                     ready.set_query(query);
@@ -470,12 +503,12 @@ impl Session {
                     match surface {
                         Some(surface) => {
                             ready.failed.remove(&key);
-                            let current = ready.zoom.scale(ready.viewport, ready.media(page));
+                            let current = ready.page_scale(page);
                             if ready.visible == page && current == scale {
                                 ready.surfaces.insert(page, scale, surface);
                             } else if ready.pages_open {
                                 if let Some(media) = ready.loaded_media(page) {
-                                    if thumbnail_scale(media) == scale
+                                    if ready.thumb_scale_for(media) == scale
                                         && ready.thumb_page_window().contains(&page)
                                     {
                                         ready.thumbs.insert(page, scale, surface);
@@ -581,12 +614,14 @@ impl Session {
     }
 
     pub fn subscription(&self) -> iced::Subscription<Message> {
-        event::listen_with(|event, _status, _id| match event {
+        event::listen_with(|event, _status, id| match event {
             Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
-            Event::Window(window::Event::Resized(size)) => Some(Message::SetViewport(Viewport {
+            Event::Window(window::Event::Opened { size, .. })
+            | Event::Window(window::Event::Resized(size)) => Some(Message::WindowMetrics {
                 width: size.width,
                 height: (size.height - crate::view::CHROME_HEIGHT).max(1.0),
-            })),
+                id,
+            }),
             _ => None,
         })
     }
@@ -594,6 +629,7 @@ impl Session {
     pub fn begin_open(&mut self, source: OpenSource) -> Task<Message> {
         let recents = self.recents();
         let theme = self.theme();
+        let render_scale = self.render_scale();
         let mut gen = self.open_gen().wrapping_add(1);
         if gen == 0 {
             gen = 1;
@@ -603,6 +639,7 @@ impl Session {
             recents,
             gen,
             theme,
+            render_scale,
         };
         Task::perform(open_ready(source), move |result| Message::Opened {
             gen,
@@ -624,6 +661,7 @@ impl Session {
         }
         let recents = merge_recents(self.recents(), read_recents());
         let theme = self.theme();
+        let render_scale = self.render_scale();
         match result {
             Ok(mut ready) => {
                 let path = ready.source.path().to_path_buf();
@@ -631,6 +669,7 @@ impl Session {
                 let _ = save_recents(&recents);
                 ready.recents = recents;
                 ready.theme = theme;
+                ready.render_scale = render_scale;
                 ready.open_gen = gen;
                 ready.signatures_open = false;
                 ready.pages_open = false;
@@ -656,6 +695,7 @@ impl Session {
                     recents,
                     gen,
                     theme,
+                    render_scale,
                 };
             }
         }
@@ -665,10 +705,12 @@ impl Session {
         let recents = self.recents();
         let theme = self.theme();
         let open_gen = self.open_gen();
+        let render_scale = self.render_scale();
         *self = Session::Empty(EmptyState {
             recents,
             theme,
             open_gen,
+            render_scale,
             ..EmptyState::default()
         });
         empty_tasks()
@@ -700,6 +742,28 @@ impl Session {
     fn close_overflow(&mut self) {
         if let Session::Ready(ready) = self {
             ready.overflow_open = false;
+        }
+    }
+    fn render_scale(&self) -> f32 {
+        match self {
+            Session::Empty(empty) => empty.render_scale,
+            Session::Loading { render_scale, .. } | Session::Failed { render_scale, .. } => {
+                *render_scale
+            }
+            Session::Ready(ready) => ready.render_scale,
+        }
+    }
+
+    fn set_render_scale(&mut self, scale: f32) {
+        match self {
+            Session::Empty(empty) => empty.render_scale = scale,
+            Session::Loading {
+                render_scale: s, ..
+            }
+            | Session::Failed {
+                render_scale: s, ..
+            } => *s = scale,
+            Session::Ready(ready) => ready.render_scale = scale,
         }
     }
 
@@ -767,7 +831,7 @@ impl Session {
             let Some(media) = ready.loaded_media(page) else {
                 continue;
             };
-            let scale = thumbnail_scale(media);
+            let scale = ready.thumb_scale_for(media);
             let key = render_key(page, scale);
             if ready.thumbs.get(page, scale).is_some()
                 || ready.inflight.contains(&key)
@@ -818,6 +882,10 @@ fn render_task(engine: PdfiumEngine, page: PageNo, scale: Scale) -> Task<Message
         },
     )
 }
+/// Pergunta o DPR da janela ao backend (precisa do `id` do evento).
+fn query_window_scale(id: window::Id) -> Task<Message> {
+    window::get_scale_factor(id).map(Message::WindowScale)
+}
 
 pub fn thumbnail_scale(media: MediaBox) -> Scale {
     Scale::from_factor((THUMB_WIDTH / media.width.max(1.0)).clamp(0.05, 2.0))
@@ -835,6 +903,27 @@ impl Ready {
         })
     }
 
+    /// Escala de render em px físicos: zoom CSS × DPR da janela.
+    /// Guarda <1.0 (campo ainda desconhecido) como 1.0.
+    fn page_scale(&self, page: PageNo) -> Scale {
+        let css = self.zoom.scale(self.viewport, self.media(page)).factor();
+        let dpr = if self.render_scale >= 1.0 {
+            self.render_scale
+        } else {
+            1.0
+        };
+        Scale::from_factor(css * dpr)
+    }
+
+    fn thumb_scale_for(&self, media: MediaBox) -> Scale {
+        let dpr = if self.render_scale >= 1.0 {
+            self.render_scale
+        } else {
+            1.0
+        };
+        Scale::from_factor(thumbnail_scale(media).factor() * dpr)
+    }
+
     fn loaded_media(&self, page: PageNo) -> Option<MediaBox> {
         self.pages.media.get(page.index() as usize).and_then(|m| *m)
     }
@@ -850,16 +939,16 @@ impl Ready {
 
     pub fn thumb_surface(&self, page: PageNo) -> Option<&PageSurface> {
         let media = self.loaded_media(page)?;
-        self.thumbs.get(page, thumbnail_scale(media))
+        self.thumbs.get(page, self.thumb_scale_for(media))
     }
 
     pub fn visible_surface(&self) -> Option<&PageSurface> {
-        let scale = self.zoom.scale(self.viewport, self.media(self.visible));
+        let scale = self.page_scale(self.visible);
         self.surface(self.visible, scale)
     }
 
     pub fn visible_render_failed(&self) -> bool {
-        let scale = self.zoom.scale(self.viewport, self.media(self.visible));
+        let scale = self.page_scale(self.visible);
         self.failed.contains(&render_key(self.visible, scale))
     }
 
@@ -914,7 +1003,7 @@ impl Ready {
 
     fn request_render(&mut self) -> Task<Message> {
         let page = self.visible;
-        let scale = self.zoom.scale(self.viewport, self.media(page));
+        let scale = self.page_scale(page);
         let key = render_key(page, scale);
         if self.surfaces.get(page, scale).is_some()
             || self.inflight.contains(&key)
@@ -949,6 +1038,7 @@ impl Document {
             pages_open: false,
             pages_scroll_y: 0.0,
             recents: Vec::new(),
+            render_scale: 1.0,
             theme: Theme::Dark,
             overflow_open: false,
             open_gen: 0,
@@ -1359,6 +1449,7 @@ mod tests {
             recents: Vec::new(),
             gen: 1,
             theme: Theme::Dark,
+            render_scale: 1.0,
         };
         apply(
             &mut session,
@@ -1556,5 +1647,66 @@ mod tests {
         }
         apply(&mut session, Message::ToggleOverflow);
         assert!(matches!(session, Session::Empty(_)));
+    }
+
+    #[test]
+    fn window_scale_sets_dpr_and_ignores_garbage() {
+        let mut session = Session::Empty(EmptyState {
+            render_scale: 1.0,
+            ..EmptyState::default()
+        });
+        apply(&mut session, Message::WindowScale(2.0));
+        assert_eq!(session.render_scale(), 2.0);
+        apply(&mut session, Message::WindowScale(f32::NAN));
+        apply(&mut session, Message::WindowScale(0.0));
+        assert_eq!(session.render_scale(), 2.0);
+        apply(&mut session, Message::WindowScale(2.0));
+        assert_eq!(session.render_scale(), 2.0);
+    }
+
+    #[test]
+    fn page_scale_multiplies_css_zoom_by_dpr() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let css = ready.zoom.scale(ready.viewport, ready.media(ready.visible));
+        assert_eq!(ready.page_scale(ready.visible), css);
+        ready.render_scale = 2.0;
+        assert_eq!(
+            ready.page_scale(ready.visible),
+            Scale::from_factor(css.factor() * 2.0)
+        );
+        ready.render_scale = 0.0;
+        assert_eq!(ready.page_scale(ready.visible), css);
+    }
+
+    #[test]
+    fn render_scale_survives_open_and_close() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let mut session = Session::Empty(EmptyState {
+            render_scale: 2.0,
+            ..EmptyState::default()
+        });
+        let _ = session.begin_open(OpenSource::Path(sample_pdf()));
+        assert_eq!(session.render_scale(), 2.0);
+        let gen = match &session {
+            Session::Loading { gen, .. } => *gen,
+            other => panic!("expected Loading, got {other:?}"),
+        };
+        let _ = session.update(Message::Opened {
+            gen,
+            result: Ok(ready),
+        });
+        match &session {
+            Session::Ready(r) => assert_eq!(r.render_scale, 2.0),
+            other => panic!("expected Ready, got {other:?}"),
+        }
+        apply(&mut session, Message::Close);
+        match &session {
+            Session::Empty(empty) => assert_eq!(empty.render_scale, 2.0),
+            other => panic!("expected Empty, got {other:?}"),
+        }
     }
 }
