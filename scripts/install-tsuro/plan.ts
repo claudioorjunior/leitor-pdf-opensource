@@ -4,9 +4,9 @@ export const REPO = "claudioorjunior/tsuro-pdf";
 export const CLONE_URL = "https://github.com/claudioorjunior/tsuro-pdf.git";
 export const TRACKING_ISSUE = "https://github.com/claudioorjunior/tsuro-pdf/issues/5";
 export const API_BASE = `https://api.github.com/repos/${REPO}`;
-export const MAC_APP_DEST = "/Applications/Tsuro.app";
+export const MAC_APP_DEST = "/Applications/TsuroPDF.app";
 
-/** Nomes: `Tsuro-{versão}-aarch64-apple-darwin.dmg` / `Tsuro-{versão}-x86_64-pc-windows-msvc-setup.exe`. */
+/** Nomes: `TsuroPDF-{versão}-aarch64-apple-darwin.dmg` / `TsuroPDF-{versão}-x86_64-pc-windows-msvc-setup.exe`. */
 export const TRIPLE_MAC = "aarch64-apple-darwin";
 export const TRIPLE_WIN = "x86_64-pc-windows-msvc";
 
@@ -211,7 +211,7 @@ export function planFromRelease(
     host.os === "macos"
       ? [
           "hdiutil attach -nobrowse -readonly <dmg>",
-          `ditto <Tsuro.app> ${MAC_APP_DEST}`,
+          `ditto <TsuroPDF.app> ${MAC_APP_DEST}`,
           "hdiutil detach <mount>",
         ]
       : [

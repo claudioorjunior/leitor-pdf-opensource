@@ -49,12 +49,12 @@ describe("release JSON → plano", () => {
     const result = planFromRelease(load("latest-macos.json"), mac);
     expect("plan" in result).toBe(true);
     if (!("plan" in result)) return;
-    expect(result.plan.assetName).toBe("Tsuro-0.2.0-aarch64-apple-darwin.dmg");
-    expect(result.plan.url).toContain("v0.2.0/Tsuro-0.2.0-aarch64-apple-darwin.dmg");
+    expect(result.plan.assetName).toBe("TsuroPDF-0.2.0-aarch64-apple-darwin.dmg");
+    expect(result.plan.url).toContain("v0.2.0/TsuroPDF-0.2.0-aarch64-apple-darwin.dmg");
     expect(result.plan.digest).toBe("a".repeat(64));
     expect(result.plan.steps).toEqual([
       "hdiutil attach -nobrowse -readonly <dmg>",
-      "ditto <Tsuro.app> /Applications/Tsuro.app",
+      "ditto <TsuroPDF.app> /Applications/TsuroPDF.app",
       "hdiutil detach <mount>",
     ]);
   });
@@ -63,7 +63,7 @@ describe("release JSON → plano", () => {
     const result = planFromRelease(load("latest-macos.json"), win);
     expect("plan" in result).toBe(true);
     if (!("plan" in result)) return;
-    expect(result.plan.assetName).toBe("Tsuro-0.2.0-x86_64-pc-windows-msvc-setup.exe");
+    expect(result.plan.assetName).toBe("TsuroPDF-0.2.0-x86_64-pc-windows-msvc-setup.exe");
     expect(result.plan.steps).toEqual(["<setup.exe> /S"]);
   });
 
@@ -108,7 +108,7 @@ describe("semver e checksum", () => {
 
   test("digest GitHub e ficheiro SHA256", () => {
     expect(parseDigest("sha256:" + "ab".repeat(32))).toBe("ab".repeat(32));
-    const name = "Tsuro-aarch64-apple-darwin.dmg";
+    const name = "TsuroPDF-aarch64-apple-darwin.dmg";
     expect(parseSha256File(`${"cd".repeat(32)}  ${name}\n`, name)).toBe("cd".repeat(32));
     expect(parseSha256File(`SHA256 (${name}) = ${"ef".repeat(32)}\n`, name)).toBe("ef".repeat(32));
   });
@@ -129,7 +129,7 @@ describe("Info.plist e translocação", () => {
   });
 
   test("recusa caminho translocado", () => {
-    expect(isTranslocated("/private/var/folders/xx/AppTranslocation/ABC/d/Tsuro.app")).toBe(true);
-    expect(isTranslocated("/Volumes/Tsuro/Tsuro.app")).toBe(false);
+    expect(isTranslocated("/private/var/folders/xx/AppTranslocation/ABC/d/TsuroPDF.app")).toBe(true);
+    expect(isTranslocated("/Volumes/TsuroPDF/TsuroPDF.app")).toBe(false);
   });
 });

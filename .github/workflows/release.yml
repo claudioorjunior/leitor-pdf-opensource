@@ -26,7 +26,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
-          path: dist/Tsuro-*-aarch64-apple-darwin.dmg
+          path: dist/TsuroPDF-*-aarch64-apple-darwin.dmg
           if-no-files-found: error
 
   windows:
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: windows-nsis
-          path: dist/Tsuro-*-x86_64-pc-windows-msvc-setup.exe
+          path: dist/TsuroPDF-*-x86_64-pc-windows-msvc-setup.exe
           if-no-files-found: error
 
   publish:
@@ -68,13 +68,13 @@ jobs:
           sha256sum * | tee SHA256SUMS
           NOTES="$(mktemp)"
           cat >"$NOTES" <<EOF
-          Tsuro ${GITHUB_REF_NAME}
+          TsuroPDF ${GITHUB_REF_NAME}
 
-          - Mac Apple Silicon: \`Tsuro-*-aarch64-apple-darwin.dmg\` — arraste para Applications.
-            Na primeira abertura: clique com o botão direito em Tsuro → Abrir (assinatura ad-hoc, sem Apple Developer Program).
-          - Windows x64: \`Tsuro-*-x86_64-pc-windows-msvc-setup.exe\` — instala em %LOCALAPPDATA%\\Programs\\Tsuro, sem admin.
+          - Mac Apple Silicon: \`TsuroPDF-*-aarch64-apple-darwin.dmg\` — arraste para Applications.
+            Na primeira abertura: clique com o botão direito em TsuroPDF → Abrir (assinatura ad-hoc, sem Apple Developer Program).
+          - Windows x64: \`TsuroPDF-*-x86_64-pc-windows-msvc-setup.exe\` — instala em %LOCALAPPDATA%\\Programs\\TsuroPDF, sem admin.
             Se o SmartScreen aparecer: Mais informações → Executar assim mesmo.
 
           SHA-256 em \`SHA256SUMS\`. Instalador terminal: \`bun run install:tsuro -- --install\`.
           EOF
-          gh release create "$GITHUB_REF_NAME" --title "Tsuro ${GITHUB_REF_NAME}" --notes-file "$NOTES" ./*
+          gh release create "$GITHUB_REF_NAME" --title "TsuroPDF ${GITHUB_REF_NAME}" --notes-file "$NOTES" ./*

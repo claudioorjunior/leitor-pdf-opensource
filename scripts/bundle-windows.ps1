@@ -1,6 +1,6 @@
 # Empacota o visor nativo para Windows (NSIS CurrentUser).
 # Uso (PowerShell): powershell -File scripts/bundle-windows.ps1
-# Saída: dist/Tsuro-{versão}-x86_64-pc-windows-msvc-setup.exe
+# Saída: dist/TsuroPDF-{versão}-x86_64-pc-windows-msvc-setup.exe
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
@@ -11,7 +11,7 @@ $Version = $Matches[1]
 $PdfiumRelease = "chromium/8044"
 $Asset = "pdfium-win-x64.tgz"
 $WinDir = Join-Path $Root "dist\windows"
-$Out = Join-Path $Root "dist\Tsuro-$Version-x86_64-pc-windows-msvc-setup.exe"
+$Out = Join-Path $Root "dist\TsuroPDF-$Version-x86_64-pc-windows-msvc-setup.exe"
 
 New-Item -ItemType Directory -Force -Path $WinDir | Out-Null
 

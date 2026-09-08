@@ -3,7 +3,7 @@ name = "tsuro"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-description = "Tsuro, leitor de PDF nativo (iced)"
+description = "TsuroPDF, leitor de PDF nativo (iced)"
 
 [[bin]]
 name = "tsuro"
