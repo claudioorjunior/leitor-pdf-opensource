@@ -1,6 +1,6 @@
 # Empacota o visor nativo para Windows (NSIS CurrentUser).
 # Uso (PowerShell): powershell -File scripts/bundle-windows.ps1
-# Saída: dist/Tsuro-{versão}-x86_64-pc-windows-msvc-setup.exe
+# Saída: dist/TsuroPDF-{versão}-x86_64-pc-windows-msvc-setup.exe
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
@@ -11,9 +11,13 @@ $Version = $Matches[1]
 $PdfiumRelease = "chromium/8044"
 $Asset = "pdfium-win-x64.tgz"
 $WinDir = Join-Path $Root "dist\windows"
-$Out = Join-Path $Root "dist\Tsuro-$Version-x86_64-pc-windows-msvc-setup.exe"
+$Out = Join-Path $Root "dist\TsuroPDF-$Version-x86_64-pc-windows-msvc-setup.exe"
+# Nomes legados do rename: não confundir com o instalador TsuroPDF.
+Remove-Item "$Root\dist\Tsuro-*-setup.exe" -Force -ErrorAction SilentlyContinue
 
 New-Item -ItemType Directory -Force -Path $WinDir | Out-Null
+# Staging limpa: build anterior deixava tsuro.exe legado ao lado do binário novo.
+Remove-Item (Join-Path $WinDir "*") -Recurse -Force -ErrorAction SilentlyContinue
 
 $PdfiumDll = Join-Path $Root "pdfium.dll"
 if (-not (Test-Path $PdfiumDll)) {
@@ -33,7 +37,7 @@ if (-not (Test-Path $PdfiumDll)) {
 cargo build --release -p tsuro --manifest-path "$Root\Cargo.toml"
 if ($LASTEXITCODE -ne 0) { throw "cargo build falhou" }
 
-Copy-Item "$Root\target\release\tsuro.exe" "$WinDir\tsuro.exe" -Force
+Copy-Item "$Root\target\release\TsuroPDF.exe" "$WinDir\TsuroPDF.exe" -Force
 Copy-Item $PdfiumDll "$WinDir\pdfium.dll" -Force
 Copy-Item "$Root\LICENSE" "$WinDir\LICENSE" -Force
 
