@@ -123,6 +123,13 @@ fn open_button(t: Tokens) -> Element<'static, Message> {
     )
 }
 
+fn home_button(t: Tokens) -> Element<'static, Message> {
+    tip(
+        control(t, button(icon!(t, "home")).on_press(Message::Close)),
+        "Início",
+    )
+}
+
 /// Moldura da toolbar Kiri: 36px, fundo `chrome`, respiro horizontal 8px.
 fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Message> {
     container(content)
@@ -297,6 +304,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         return toolbar_frame(
             t,
             row![
+                home_button(t),
                 open_button(t),
                 kiri::vsep(t),
                 Space::with_width(Length::Fill),
@@ -313,12 +321,15 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         );
     }
 
+    // Tela inicial não precisa de home; erro/carregando usam para voltar.
+    let mut items: Vec<Element<'_, Message>> = Vec::new();
+    if !matches!(session, Session::Empty(_)) {
+        items.push(home_button(t));
+    }
+    items.push(open_button(t));
     toolbar_frame(
         t,
-        row![open_button(t)]
-            .spacing(4)
-            .align_y(Alignment::Center)
-            .into(),
+        row(items).spacing(4).align_y(Alignment::Center).into(),
     )
 }
 
