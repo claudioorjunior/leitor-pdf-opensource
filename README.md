@@ -21,7 +21,7 @@ O que ele faz cabe na barra:
 - **Assinaturas** — painel sob demanda, com o signatário e o estado criptográfico
 - **Copiar** o texto selecionado, quando há seleção
 
-Anotações e marcações fazem parte da missão; ainda não estão no visor. O que fica de fora — e deve continuar de fora — é o resto da suíte: formulários, nuvem, impressão, colaboração, qualquer função que não sirva para ler ou marcar.
+Anotações, marcações e impressão fazem parte da missão; anotações e marcações ainda não estão no visor, e impressão chega como PDF de impressão (200 DPI) sem diálogo nativo. O que fica de fora — e deve continuar de fora — é o resto da suíte: formulários, nuvem, colaboração, qualquer função que não sirva para ler, marcar ou imprimir.
 
 ## Instalar
 
