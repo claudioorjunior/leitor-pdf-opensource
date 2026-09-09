@@ -6,6 +6,7 @@ pub mod session;
 pub mod view;
 
 pub(crate) mod engine;
+pub(crate) mod print;
 
 pub use page::{Bitmap, MediaBox, PageNo, Quad, Scale, TextLayer, Viewport};
 pub use session::{Message, OpenSource, Session};

@@ -20,6 +20,7 @@ use crate::page::{
     EngineError, Glyph, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer, Viewport,
 };
 use crate::prefs::{read_theme, save_theme};
+use crate::print::{print_document, write_and_open_print_pdf};
 
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
 pub(crate) const THUMB_ROW: f32 = 156.0;
@@ -302,6 +303,10 @@ pub struct Ready {
     pub theme: Theme,
     /// Menu ⋯ aberto. Só existe em `Ready`; zera ao trocar de documento.
     pub overflow_open: bool,
+    /// Impressão em andamento (⋯ → Imprimir); trava novos `Print` até terminar.
+    pub print_busy: bool,
+    /// Erro da última impressão — banner no chrome, sem descarregar o documento.
+    pub print_error: Option<String>,
     pub pages_scroll_y: f32,
     recents: Vec<PathBuf>,
     /// DPR da janela: bitmap sai em px físicos (zoom CSS × isto).
@@ -515,6 +520,13 @@ pub enum Message {
     ToggleSignatures,
     TogglePages,
     ToggleOverflow,
+    /// ⋯ → Imprimir: re-renderiza páginas em ~200 DPI e abre o PDF no visualizador do SO.
+    Print,
+    /// Resultado de `Print`; `doc_gen` precisa casar com o `open_gen` do documento atual.
+    PrintFinished {
+        doc_gen: u64,
+        result: Result<(), String>,
+    },
     SetTheme(Theme),
     /// Janela informou tamanho + identidade: ajusta viewport e reconsulta o DPR.
     WindowMetrics {
@@ -813,6 +825,52 @@ impl Session {
                 if let Session::Ready(ready) = self {
                     ready.overflow_open = !ready.overflow_open;
                 }
+                Task::none()
+            }
+            Message::Print => {
+                let Session::Ready(ready) = self else {
+                    return Task::none();
+                };
+                if ready.print_busy {
+                    return Task::none();
+                }
+                ready.overflow_open = false;
+                ready.print_error = None;
+                ready.print_busy = true;
+                let engine = ready.engine.clone();
+                let source = ready.source.path().to_path_buf();
+                let doc_gen = ready.open_gen;
+                // Render ~200 DPI + escrita/abertura são IO pesado: thread própria.
+                Task::perform(
+                    async move {
+                        let printed = tokio::task::spawn_blocking(
+                            move || -> Result<(), crate::print::PrintError> {
+                                let bytes = print_document(&engine)?;
+                                write_and_open_print_pdf(&bytes, &source)?;
+                                Ok(())
+                            },
+                        )
+                        .await;
+                        match printed {
+                            Ok(Ok(())) => Ok(()),
+                            Ok(Err(err)) => Err(err.to_string()),
+                            Err(join) => Err(join.to_string()),
+                        }
+                    },
+                    move |result| Message::PrintFinished { doc_gen, result },
+                )
+            }
+            Message::PrintFinished { doc_gen, result } => {
+                if let Session::Ready(ready) = self {
+                    if doc_gen == ready.open_gen {
+                        ready.print_busy = false;
+                        match result {
+                            Ok(()) => ready.print_error = None,
+                            Err(err) => ready.print_error = Some(err),
+                        }
+                    }
+                }
+                // Impressão não toca o cache de páginas: nada a reagendar.
                 Task::none()
             }
             Message::SetTheme(theme) => {
@@ -1515,6 +1573,8 @@ impl Document {
             render_scale: 1.0,
             theme: Theme::Dark,
             overflow_open: false,
+            print_busy: false,
+            print_error: None,
             open_gen: 0,
             render_gen: 1,
             surfaces: SurfaceCache::default(),
@@ -2525,5 +2585,126 @@ mod tests {
             Session::Empty(empty) => assert_eq!(empty.render_scale, 2.0),
             other => panic!("expected Empty, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn print_on_empty_is_noop() {
+        let mut session = Session::empty();
+        apply(&mut session, Message::Print);
+        assert!(matches!(session, Session::Empty(_)));
+        apply(
+            &mut session,
+            Message::PrintFinished {
+                doc_gen: 0,
+                result: Err("falha na impressão".into()),
+            },
+        );
+        assert!(matches!(session, Session::Empty(_)));
+    }
+
+    #[test]
+    fn print_from_ready_closes_overflow_and_marks_busy() {
+        let Some(mut ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        ready.overflow_open = true;
+        ready.print_error = Some("erro antigo".into());
+        let mut session = Session::Ready(ready);
+        apply(&mut session, Message::Print);
+        let Session::Ready(r) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        assert!(!r.overflow_open);
+        assert!(r.print_busy);
+        assert!(r.print_error.is_none());
+    }
+
+    #[test]
+    fn second_print_while_busy_is_ignored() {
+        let Some(ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        let mut session = Session::Ready(ready);
+        apply(&mut session, Message::Print);
+        let Session::Ready(r) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        assert!(r.print_busy);
+        // Usuário reabre o menu enquanto imprime: novo Print não pode mexer em nada.
+        apply(&mut session, Message::ToggleOverflow);
+        apply(&mut session, Message::Print);
+        let Session::Ready(r) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        assert!(r.print_busy);
+        assert!(r.overflow_open);
+        assert!(r.print_error.is_none());
+    }
+
+    #[test]
+    fn print_finished_err_keeps_ready_and_reports_error() {
+        let Some(mut ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        ready.print_busy = true;
+        let doc_gen = ready.open_gen;
+        let mut session = Session::Ready(ready);
+        apply(
+            &mut session,
+            Message::PrintFinished {
+                doc_gen,
+                result: Err("falha na impressão".into()),
+            },
+        );
+        let Session::Ready(r) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        assert!(!r.print_busy);
+        assert_eq!(r.print_error.as_deref(), Some("falha na impressão"));
+    }
+
+    #[test]
+    fn print_finished_ok_clears_error_and_busy() {
+        let Some(mut ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        ready.print_busy = true;
+        ready.print_error = Some("erro antigo".into());
+        let doc_gen = ready.open_gen;
+        let mut session = Session::Ready(ready);
+        apply(
+            &mut session,
+            Message::PrintFinished {
+                doc_gen,
+                result: Ok(()),
+            },
+        );
+        let Session::Ready(r) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        assert!(!r.print_busy);
+        assert!(r.print_error.is_none());
+    }
+
+    #[test]
+    fn print_finished_with_stale_doc_gen_is_ignored() {
+        let Some(mut ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        ready.print_busy = true;
+        let stale = ready.open_gen.wrapping_add(1);
+        let mut session = Session::Ready(ready);
+        apply(
+            &mut session,
+            Message::PrintFinished {
+                doc_gen: stale,
+                result: Err("tarde demais".into()),
+            },
+        );
+        let Session::Ready(r) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        assert!(r.print_busy);
+        assert!(r.print_error.is_none());
     }
 }

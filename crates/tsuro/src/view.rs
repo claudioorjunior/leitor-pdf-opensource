@@ -358,6 +358,7 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         "Ajustar página inteira",
         Message::SetZoom(Zoom::Page),
     ));
+    items = items.push(print_menu_item(ready, t));
     if ready.selection_plain_text().is_some() {
         items = items.push(menu_item(t, "Copiar seleção", Message::CopySelection));
     }
@@ -393,6 +394,25 @@ fn menu_item(t: Tokens, label: &'static str, message: Message) -> Element<'stati
         .style(kiri::menu_item_style(t))
         .on_press(message)
         .into()
+}
+
+/// ⋯ → Imprimir: rótulo muda enquanto o PDF é preparado (~200 DPI).
+fn print_menu_item(ready: &Ready, t: Tokens) -> Element<'static, Message> {
+    let label = if ready.print_busy {
+        "Preparando impressão…"
+    } else {
+        "Imprimir"
+    };
+    button(
+        row![kiri::ori!("print"), text(label).size(13)]
+            .spacing(8)
+            .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding(Padding::from([8, 10]))
+    .style(kiri::menu_item_style(t))
+    .on_press_maybe((!ready.print_busy).then_some(Message::Print))
+    .into()
 }
 
 fn menu_theme_button(
@@ -560,7 +580,22 @@ fn ready_body(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     if ready.signatures_open {
         panes = panes.push(signatures_panel(ready, t));
     }
-    panes.into()
+    // Status de impressão (⋯ → Imprimir): 1 linha no topo do corpo, fora do
+    // chrome — erro não descarrega o documento.
+    if ready.print_busy || ready.print_error.is_some() {
+        let status = match &ready.print_error {
+            Some(err) => text(format!("Não foi possível preparar a impressão: {err}"))
+                .size(13)
+                .color(t.danger),
+            None => text("Preparando impressão…").size(13).color(t.muted),
+        };
+        column![status, panes]
+            .spacing(8)
+            .height(Length::Fill)
+            .into()
+    } else {
+        panes.into()
+    }
 }
 
 fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
