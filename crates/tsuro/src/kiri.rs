@@ -125,6 +125,7 @@ pub fn ori_icon<Message: 'static>(file: &str, size: f32) -> iced::Element<'stati
         "fit-width" => include_bytes!("../assets/icons/ori/fit-width.svg"),
         "pages" => include_bytes!("../assets/icons/ori/pages.svg"),
         "shield" => include_bytes!("../assets/icons/ori/shield.svg"),
+        "home" => include_bytes!("../assets/icons/ori/home.svg"),
         "more" => include_bytes!("../assets/icons/ori/more.svg"),
         _ => include_bytes!("../assets/icons/ori/more.svg"),
     };
