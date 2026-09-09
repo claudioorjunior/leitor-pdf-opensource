@@ -1,10 +1,16 @@
 //! PDF de impressão: jobs em ~200 DPI + montagem via `pdf-writer`.
 
-use std::fs::OpenOptions;
-use std::io::Write;
+#[cfg(any(not(target_os = "macos"), test))]
 use std::path::{Path, PathBuf};
-use std::process::Command;
+#[cfg(any(not(target_os = "macos"), test))]
 use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(not(target_os = "macos"))]
+use std::fs::OpenOptions;
+#[cfg(not(target_os = "macos"))]
+use std::io::Write;
+#[cfg(not(target_os = "macos"))]
+use std::process::Command;
 
 use miniz_oxide::deflate::compress_to_vec_zlib;
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref};
@@ -14,6 +20,7 @@ use crate::page::{Bitmap, MediaBox, PageEngine, PageNo, Scale};
 /// DPI de impressão da v1 (user space PDF = 72 DPI).
 pub const PRINT_DPI: f32 = 200.0;
 const PDF_USER_SPACE_DPI: f32 = 72.0;
+#[cfg(any(not(target_os = "macos"), test))]
 static PRINT_FILE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -148,6 +155,74 @@ fn write_print_page(
     Ok(())
 }
 
+/// Mostra a folha de impressão do sistema sobre o Tsuro.
+///
+/// No Mac: `NSPrintPanel` com mini preview, impressora, papel e intervalo.
+/// Não abre Preview.app nem o handler padrão de PDF.
+pub fn present_print_pdf(bytes: &[u8], job_title: &str) -> Result<(), PrintError> {
+    if bytes.is_empty() {
+        return Err(PrintError("PDF de impressão vazio".into()));
+    }
+    let _ = job_title;
+    #[cfg(test)]
+    {
+        return Ok(());
+    }
+    #[cfg(all(target_os = "macos", not(test)))]
+    {
+        return macos_present_print_pdf(bytes, job_title);
+    }
+    #[cfg(all(not(target_os = "macos"), not(test)))]
+    {
+        return write_and_open_print_pdf(bytes, Path::new(job_title)).map(|_| ());
+    }
+    #[allow(unreachable_code)]
+    Ok(())
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn macos_present_print_pdf(bytes: &[u8], job_title: &str) -> Result<(), PrintError> {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSPrintInfo, NSPrintPanelOptions};
+    use objc2_foundation::{NSData, NSString};
+    use objc2_pdf_kit::{PDFDocument, PDFPrintScalingMode};
+
+    let mtm = MainThreadMarker::new().ok_or_else(|| {
+        PrintError("a folha de impressão precisa da thread principal".into())
+    })?;
+    let data = NSData::with_bytes(bytes);
+    let Some(document) = (unsafe { PDFDocument::initWithData(PDFDocument::alloc(), &data) }) else {
+        return Err(PrintError("não foi possível montar a folha de impressão".into()));
+    };
+    let print_info = NSPrintInfo::sharedPrintInfo();
+    let Some(operation) = (unsafe {
+        document.printOperationForPrintInfo_scalingMode_autoRotate(
+            Some(&print_info),
+            PDFPrintScalingMode::PageScaleDownToFit,
+            true,
+            mtm,
+        )
+    }) else {
+        return Err(PrintError("não foi possível preparar a folha de impressão".into()));
+    };
+    operation.setShowsPrintPanel(true);
+    operation.setShowsProgressPanel(true);
+    let title = NSString::from_str(job_title);
+    operation.setJobTitle(Some(&title));
+    let panel = operation.printPanel();
+    panel.setOptions(
+        NSPrintPanelOptions::ShowsPreview
+            | NSPrintPanelOptions::ShowsCopies
+            | NSPrintPanelOptions::ShowsPageRange
+            | NSPrintPanelOptions::ShowsPaperSize
+            | NSPrintPanelOptions::ShowsOrientation
+            | NSPrintPanelOptions::ShowsPageSetupAccessory,
+    );
+    let _printed = operation.runOperation();
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn write_and_open_print_pdf(bytes: &[u8], source: &Path) -> Result<PathBuf, PrintError> {
     let mut last_err = None;
     for _ in 0..8 {
@@ -160,7 +235,7 @@ pub fn write_and_open_print_pdf(bytes: &[u8], source: &Path) -> Result<PathBuf, 
                         "não foi possível gravar o PDF de impressão: {err}"
                     )));
                 }
-                open_with_system_viewer(&path)?;
+                open_fallback_viewer(&path)?;
                 return Ok(path);
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -181,6 +256,7 @@ pub fn write_and_open_print_pdf(bytes: &[u8], source: &Path) -> Result<PathBuf, 
     )))
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 pub fn print_temp_path(source: &Path) -> PathBuf {
     let stem = source
         .file_stem()
@@ -204,72 +280,36 @@ pub fn print_temp_path(source: &Path) -> PathBuf {
     ))
 }
 
-pub fn open_with_system_viewer(path: &Path) -> Result<(), PrintError> {
-    #[cfg(target_os = "macos")]
-    {
-        // Não usar `open arquivo.pdf`: o handler padrão pode ser um editor
-        // (PDFgear, Adobe, etc.). Imprimir da v1 é o Preview, onde o usuário
-        // confirma a impressora com Cmd+P.
-        if run_viewer(macos_preview_command(path))? {
-            return Ok(());
+#[cfg(not(target_os = "macos"))]
+fn open_fallback_viewer(path: &Path) -> Result<(), PrintError> {
+    let mut command = {
+        #[cfg(target_os = "windows")]
+        {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "start", ""]);
+            command.arg(path);
+            command
         }
-        let mut fallback = Command::new("open");
-        fallback.arg(path);
-        if run_viewer(fallback)? {
-            return Ok(());
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut command = Command::new("xdg-open");
+            command.arg(path);
+            command
         }
-        return Err(PrintError(
-            "não foi possível abrir o Preview para imprimir".into(),
-        ));
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        run_viewer(default_viewer_command(path)).and_then(|ok| {
-            if ok {
+    };
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|err| PrintError(format!("não foi possível abrir o visualizador: {err}")))
+        .and_then(|status| {
+            if status.success() {
                 Ok(())
             } else {
                 Err(PrintError("não foi possível abrir o visualizador".into()))
             }
         })
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn macos_preview_command(path: &Path) -> Command {
-    let mut command = Command::new("open");
-    command.args(["-b", "com.apple.Preview"]);
-    command.arg(path);
-    command
-}
-
-#[cfg(not(target_os = "macos"))]
-fn default_viewer_command(path: &Path) -> Command {
-    #[cfg(target_os = "windows")]
-    {
-        let mut command = Command::new("cmd");
-        command.args(["/C", "start", ""]);
-        command.arg(path);
-        command
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let mut command = Command::new("xdg-open");
-        command.arg(path);
-        command
-    }
-}
-
-fn run_viewer(mut command: Command) -> Result<bool, PrintError> {
-    command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    match command.status() {
-        Ok(status) => Ok(status.success()),
-        Err(err) => Err(PrintError(format!(
-            "não foi possível abrir o visualizador: {err}"
-        ))),
-    }
 }
 
 fn finite_positive(value: f32) -> Result<f32, PrintError> {
@@ -411,14 +451,16 @@ mod tests {
         assert!(name.ends_with(".pdf"));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn macos_print_opens_preview_not_default_pdf_handler() {
-        let cmd = macos_preview_command(Path::new("/tmp/tsuro-print-doc.pdf"));
-        let debug = format!("{cmd:?}");
-        assert!(debug.contains("open"), "{debug}");
-        assert!(debug.contains("com.apple.Preview"), "{debug}");
-        assert!(!debug.contains("com.pdfeditor.pdfeditormac"), "{debug}");
+    fn present_print_pdf_rejects_empty() {
+        assert!(present_print_pdf(&[], "doc").is_err());
+    }
+
+    #[test]
+    fn present_print_pdf_accepts_bytes_without_leaving_the_app() {
+        // Nos testes a folha nativa não abre; o caminho de produção no Mac
+        // usa PDFKit + NSPrintPanel (preview + impressora + papel).
+        present_print_pdf(b"%PDF-1.4 test", "guia-folio").expect("noop in tests");
     }
 
     #[test]

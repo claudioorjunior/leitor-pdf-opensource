@@ -20,7 +20,7 @@ use crate::page::{
     EngineError, Glyph, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer, Viewport,
 };
 use crate::prefs::{read_theme, save_theme};
-use crate::print::{print_document, write_and_open_print_pdf};
+use crate::print::{present_print_pdf, print_document};
 
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
 pub(crate) const THUMB_ROW: f32 = 156.0;
@@ -520,12 +520,12 @@ pub enum Message {
     ToggleSignatures,
     TogglePages,
     ToggleOverflow,
-    /// ⋯ → Imprimir: re-renderiza páginas em ~200 DPI e abre o PDF no visualizador do SO.
+    /// ⋯ → Imprimir: re-renderiza páginas em ~200 DPI e abre a folha nativa.
     Print,
-    /// Resultado de `Print`; `doc_gen` precisa casar com o `open_gen` do documento atual.
+    /// PDF de impressão pronto; `doc_gen` precisa casar com o `open_gen` do documento atual.
     PrintFinished {
         doc_gen: u64,
-        result: Result<(), String>,
+        result: Result<Vec<u8>, String>,
     },
     SetTheme(Theme),
     /// Janela informou tamanho + identidade: ajusta viewport e reconsulta o DPR.
@@ -838,21 +838,17 @@ impl Session {
                 ready.print_error = None;
                 ready.print_busy = true;
                 let engine = ready.engine.clone();
-                let source = ready.source.path().to_path_buf();
                 let doc_gen = ready.open_gen;
-                // Render ~200 DPI + escrita/abertura são IO pesado: thread própria.
+                // Raster ~200 DPI fora da UI. A folha nativa abre em PrintFinished
+                // (thread principal do iced) — AppKit exige isso.
                 Task::perform(
                     async move {
                         let printed = tokio::task::spawn_blocking(
-                            move || -> Result<(), crate::print::PrintError> {
-                                let bytes = print_document(&engine)?;
-                                write_and_open_print_pdf(&bytes, &source)?;
-                                Ok(())
-                            },
+                            move || print_document(&engine),
                         )
                         .await;
                         match printed {
-                            Ok(Ok(())) => Ok(()),
+                            Ok(Ok(bytes)) => Ok(bytes),
                             Ok(Err(err)) => Err(err.to_string()),
                             Err(join) => Err(join.to_string()),
                         }
@@ -863,11 +859,22 @@ impl Session {
             Message::PrintFinished { doc_gen, result } => {
                 if let Session::Ready(ready) = self {
                     if doc_gen == ready.open_gen {
-                        ready.print_busy = false;
                         match result {
-                            Ok(()) => ready.print_error = None,
+                            Ok(bytes) => {
+                                let title = ready
+                                    .source
+                                    .path()
+                                    .file_stem()
+                                    .and_then(|stem| stem.to_str())
+                                    .unwrap_or("documento");
+                                match present_print_pdf(&bytes, title) {
+                                    Ok(()) => ready.print_error = None,
+                                    Err(err) => ready.print_error = Some(err.to_string()),
+                                }
+                            }
                             Err(err) => ready.print_error = Some(err),
                         }
+                        ready.print_busy = false;
                     }
                 }
                 // Impressão não toca o cache de páginas: nada a reagendar.
@@ -2676,7 +2683,7 @@ mod tests {
             &mut session,
             Message::PrintFinished {
                 doc_gen,
-                result: Ok(()),
+                result: Ok(b"%PDF-1.4".to_vec()),
             },
         );
         let Session::Ready(r) = &session else {
