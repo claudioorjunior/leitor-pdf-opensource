@@ -298,5 +298,151 @@ fn rgba_to_rgb(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, PrintErr
         } else if alpha == 0 {
             rgb.extend_from_slice(&[255, 255, 255]);
         } else {
+            let inv = 255 - alpha;
+            rgb.push(((u16::from(pixel[0]) * alpha + 255 * inv) / 255) as u8);
+            rgb.push(((u16::from(pixel[1]) * alpha + 255 * inv) / 255) as u8);
+            rgb.push(((u16::from(pixel[2]) * alpha + 255 * inv) / 255) as u8);
+        }
+    }
+    Ok(rgb)
+}
 
-[Showing lines 1-300 of 449. Use :301 to continue]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::PdfiumEngine;
+    use tsuro_sign::analyze_pdf;
+
+    fn solid_rgba(width: u32, height: u32, rgb: [u8; 3]) -> Bitmap {
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for _ in 0..(width * height) {
+            rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        }
+        Bitmap {
+            width,
+            height,
+            rgba,
+        }
+    }
+
+    fn media_boxes(bytes: &[u8]) -> Vec<(f32, f32)> {
+        let text = String::from_utf8_lossy(bytes);
+        let mut out = Vec::new();
+        let mut rest = text.as_ref();
+        while let Some(at) = rest.find("/MediaBox") {
+            rest = &rest[at + "/MediaBox".len()..];
+            let Some(open) = rest.find('[') else {
+                break;
+            };
+            let Some(close) = rest[open + 1..].find(']') else {
+                break;
+            };
+            let inner = rest[open + 1..open + 1 + close].split_whitespace();
+            let nums: Vec<f32> = inner.filter_map(|part| part.parse().ok()).collect();
+            if nums.len() == 4 {
+                out.push((nums[2] - nums[0], nums[3] - nums[1]));
+            }
+            rest = &rest[open + 1 + close..];
+        }
+        out
+    }
+
+    #[test]
+    fn print_pages_are_ordered_at_print_scale() {
+        let jobs = print_pages(3, PRINT_DPI);
+        assert_eq!(jobs.len(), 3);
+        assert_eq!(
+            jobs.iter().map(|job| job.page.index()).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        let scale = print_scale(PRINT_DPI);
+        assert!(jobs.iter().all(|job| job.scale == scale));
+        assert!((scale.factor() - PRINT_DPI / PDF_USER_SPACE_DPI).abs() < 0.002);
+        assert!(print_pages(0, PRINT_DPI).is_empty());
+    }
+
+    #[test]
+    fn assemble_print_pdf_keeps_count_and_mediabox() {
+        let pages = [
+            (
+                solid_rgba(8, 12, [255, 0, 0]),
+                MediaBox {
+                    width: 200.0,
+                    height: 300.0,
+                },
+            ),
+            (
+                solid_rgba(10, 6, [0, 0, 255]),
+                MediaBox {
+                    width: 400.0,
+                    height: 240.0,
+                },
+            ),
+        ];
+        let bytes = assemble_print_pdf(&pages).expect("pdf");
+        let analysis = analyze_pdf(&bytes).expect("parse");
+        assert_eq!(analysis.page_count_hint, Some(2));
+        assert!(analysis.signatures.is_empty());
+        let boxes = media_boxes(&bytes);
+        assert_eq!(boxes.len(), 2);
+        assert!((boxes[0].0 - 200.0).abs() < 0.01 && (boxes[0].1 - 300.0).abs() < 0.01);
+        assert!((boxes[1].0 - 400.0).abs() < 0.01 && (boxes[1].1 - 240.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn assemble_print_pdf_rejects_empty() {
+        assert!(assemble_print_pdf(&[]).is_err());
+    }
+
+    #[test]
+    fn transparent_pixels_flatten_to_white() {
+        let mut rgba = vec![0, 0, 0, 0, 10, 20, 30, 255];
+        let rgb = rgba_to_rgb(&rgba, 2, 1).expect("rgb");
+        assert_eq!(rgb, vec![255, 255, 255, 10, 20, 30]);
+        rgba.truncate(3);
+        assert!(rgba_to_rgb(&rgba, 1, 1).is_err());
+    }
+
+    #[test]
+    fn print_temp_path_sanitizes_stem() {
+        let path = print_temp_path(Path::new("/tmp/Contrato (final).PDF"));
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap();
+        assert!(name.starts_with("tsuro-print-Contratofinal-"));
+        assert!(name.ends_with(".pdf"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_print_opens_preview_not_default_pdf_handler() {
+        let cmd = macos_preview_command(Path::new("/tmp/tsuro-print-doc.pdf"));
+        let debug = format!("{cmd:?}");
+        assert!(debug.contains("open"), "{debug}");
+        assert!(debug.contains("com.apple.Preview"), "{debug}");
+        assert!(!debug.contains("com.pdfeditor.pdfeditormac"), "{debug}");
+    }
+
+    #[test]
+    fn print_document_from_fixture_roundtrips_pages() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../public/samples/guia-folio.pdf");
+        let bytes = std::fs::read(&path).expect("fixture PDF required");
+        let engine =
+            PdfiumEngine::open(std::sync::Arc::<[u8]>::from(bytes)).expect("fixture PDF required");
+        let printed = print_document(&engine).expect("print pdf");
+        let analysis = analyze_pdf(&printed).expect("parse printed pdf");
+        assert_eq!(analysis.page_count_hint, Some(engine.page_count()));
+        let boxes = media_boxes(&printed);
+        assert_eq!(boxes.len(), engine.page_count() as usize);
+        for (index, (width, height)) in boxes.into_iter().enumerate() {
+            let media = engine
+                .media(PageNo::from_index(index as u32))
+                .expect("media");
+            assert!(
+                (width - media.width).abs() < 0.5 && (height - media.height).abs() < 0.5,
+                "page {index} mediabox {width}x{height} vs {}x{}",
+                media.width,
+                media.height
+            );
+        }
+    }
+}
