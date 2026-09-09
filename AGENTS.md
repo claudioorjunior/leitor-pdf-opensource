@@ -4,9 +4,9 @@ Source of truth for agent instructions in this repo. Do not duplicate in `CLAUDE
 
 ## Mission gate
 
-Tsuro PDF é um leitor de PDF veloz, otimizado e leve: ler, anotar, marcar. Nada além disso.
+Tsuro PDF é um leitor de PDF veloz, otimizado e leve: ler, anotar, marcar, imprimir. Nada além disso.
 
-Antes de propor ou implementar uma mudança, pergunte: isso deixa ler, anotar ou marcar mais rápido, mais leve ou mais claro? Recurso fora disso — suíte, nuvem, formulário, impressão, colaboração — recuse ou adie.
+Antes de propor ou implementar uma mudança, pergunte: isso deixa ler, anotar, marcar ou imprimir mais rápido, mais leve ou mais claro? Recurso fora disso — suíte, nuvem, formulário, colaboração — recuse ou adie.
 
 ## Blast radius first
 
