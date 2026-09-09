@@ -7,7 +7,7 @@ use tsuro_sign::SignatureStatus;
 use crate::browse::{EmptyState, FsEntry};
 use crate::kiri::{self, Theme, Tokens};
 use crate::page::PageNo;
-use crate::session::{Message, Ready, Session, Zoom, ZoomFactor, THUMB_ROW};
+use crate::session::{Message, NavCmd, Ready, Session, Zoom, ZoomFactor, THUMB_ROW};
 
 /// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
 pub const CHROME_HEIGHT: f32 = 46.0;
@@ -147,10 +147,6 @@ fn toolbar_frame(t: Tokens, content: Element<'_, Message>) -> Element<'_, Messag
 fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
     if let Session::Ready(ready) = session {
         let n = ready.page_count().max(1);
-        let idx = ready.visible.index().min(n - 1);
-        let prev = idx.saturating_sub(1);
-        let next = (idx + 1).min(n - 1);
-
         let pill = container(
             row![
                 kiri::ori_small!("search"),
@@ -158,10 +154,18 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                     .on_input(Message::SearchChanged)
                     .width(Length::Fixed(200.0)),
                 row![
-                    text(format!("{}", idx + 1)).size(12).color(t.ink),
+                    tip(
+                        text_input("Página", ready.page_input())
+                            .on_input(Message::PageInput)
+                            .on_submit(Message::PageSubmit)
+                            .width(Length::Fixed(48.0))
+                            .padding([4, 6])
+                            .size(12),
+                        "Ir para página (Enter confirma)",
+                    ),
                     text(format!("/{n}")).size(12).color(t.muted),
                 ]
-                .spacing(0)
+                .spacing(4)
                 .align_y(Alignment::Center),
                 container(
                     row![
@@ -169,7 +173,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                             control_seg(
                                 t,
                                 button(kiri::ori!("chevron-left"))
-                                    .on_press(Message::SetPage(PageNo::from_index(prev)))
+                                    .on_press(Message::Nav(NavCmd::Previous))
                             ),
                             "Página anterior"
                         ),
@@ -177,7 +181,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
                             control_seg(
                                 t,
                                 button(kiri::ori!("chevron-right"))
-                                    .on_press(Message::SetPage(PageNo::from_index(next)))
+                                    .on_press(Message::Nav(NavCmd::Next))
                             ),
                             "Próxima página"
                         ),
@@ -327,10 +331,7 @@ fn topbar(session: &Session, t: Tokens) -> Element<'_, Message> {
         items.push(home_button(t));
     }
     items.push(open_button(t));
-    toolbar_frame(
-        t,
-        row(items).spacing(4).align_y(Alignment::Center).into(),
-    )
+    toolbar_frame(t, row(items).spacing(4).align_y(Alignment::Center).into())
 }
 
 /// Camada do menu ⋯: ocupa tudo mas só os botões capturam clique.
@@ -574,14 +575,9 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     for i in start..end {
         let page = PageNo::from_index(i);
         let preview: Element<'_, Message> = match ready.thumb_surface(page) {
-            Some(surface) => {
-                let handle = image::Handle::from_rgba(
-                    surface.bitmap.width,
-                    surface.bitmap.height,
-                    surface.bitmap.rgba.clone(),
-                );
-                image(handle).width(Length::Fixed(120.0)).into()
-            }
+            Some(surface) => image(surface.image.clone())
+                .width(Length::Fixed(120.0))
+                .into(),
             None => container(text("…").size(13))
                 .width(Length::Fixed(120.0))
                 .height(Length::Fixed(150.0))
@@ -621,7 +617,7 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
                     .spacing(4)
                     .align_x(Alignment::Center),
                 )
-                .on_press(Message::SetPage(page)),
+                .on_press(Message::Nav(NavCmd::GoTo(page))),
                 active,
             )
             .width(Length::Fill),
@@ -643,14 +639,7 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
 
 fn page_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let page_view: Element<'_, Message> = match ready.visible_surface() {
-        Some(surface) => {
-            let handle = image::Handle::from_rgba(
-                surface.bitmap.width,
-                surface.bitmap.height,
-                surface.bitmap.rgba.clone(),
-            );
-            image(handle).width(Length::Fill).into()
-        }
+        Some(surface) => image(surface.image.clone()).width(Length::Fill).into(),
         None if ready.visible_render_failed() => {
             text("Não foi possível renderizar esta página.").into()
         }

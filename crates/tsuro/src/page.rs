@@ -177,7 +177,6 @@ fn next_char_boundary(s: &str, i: usize) -> usize {
 #[derive(Debug, Clone)]
 pub struct PageSurface {
     pub bitmap: Bitmap,
-    pub text: TextLayer,
     pub scale: Scale,
 }
 

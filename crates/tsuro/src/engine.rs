@@ -273,15 +273,13 @@ fn render_from_doc(
         .map_err(|e| EngineError(e.to_string()))?;
     let width = bitmap.width() as u32;
     let height = bitmap.height() as u32;
-    let rgba = rgba_from_bitmap(&bitmap);
-    let text = text_layer_from_page(&pdf_page, page)?;
+    let rgba = bitmap.as_rgba_bytes();
     Ok(PageSurface {
         bitmap: Bitmap {
             width,
             height,
             rgba,
         },
-        text,
         scale,
     })
 }
@@ -309,10 +307,6 @@ fn frameworks_lib_path(exe: &Path) -> PathBuf {
     let dir = exe.parent().unwrap_or_else(|| Path::new(""));
     dir.join("../Frameworks")
         .join(Pdfium::pdfium_platform_library_name())
-}
-
-fn rgba_from_bitmap(bitmap: &PdfBitmap<'_>) -> Vec<u8> {
-    bitmap.as_rgba_bytes().to_vec()
 }
 
 fn text_layer_from_page(page: &PdfPage<'_>, page_no: PageNo) -> Result<TextLayer, EngineError> {
