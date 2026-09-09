@@ -125,7 +125,7 @@ fn open_button(t: Tokens) -> Element<'static, Message> {
 
 fn home_button(t: Tokens) -> Element<'static, Message> {
     tip(
-        control(t, button(icon!(t, "home")).on_press(Message::Close)),
+        control(t, button(kiri::ori!("home")).on_press(Message::Close)),
         "Início",
     )
 }
