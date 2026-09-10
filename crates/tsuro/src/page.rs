@@ -189,7 +189,7 @@ pub trait PageEngine: Send + Sync {
 
     fn media(&self, page: PageNo) -> Result<MediaBox, EngineError>;
 
-    fn render(&self, page: PageNo, scale: Scale) -> Result<PageSurface, EngineError>;
+    fn render(&self, page: PageNo, scale: Scale, rotation: u8) -> Result<PageSurface, EngineError>;
 
     fn text_layer(&self, page: PageNo) -> Result<TextLayer, EngineError>;
 }
