@@ -1,16 +1,13 @@
-//! PDF de impressão: jobs em ~200 DPI + montagem via `pdf-writer`.
+//! PDF de impressão: seleção (intervalo/cópias/orientação) + montagem via `pdf-writer`.
+//!
+//! Intervalo, cópias e orientação vão assados no PDF: cada página única vira um
+//! Image XObject compartilhado pelas suas cópias.
 
-#[cfg(any(not(target_os = "macos"), test))]
-use std::path::{Path, PathBuf};
-#[cfg(any(not(target_os = "macos"), test))]
-use std::sync::atomic::{AtomicU64, Ordering};
-
-#[cfg(not(target_os = "macos"))]
 use std::fs::OpenOptions;
-#[cfg(not(target_os = "macos"))]
 use std::io::Write;
-#[cfg(not(target_os = "macos"))]
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use miniz_oxide::deflate::compress_to_vec_zlib;
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref};
@@ -20,67 +17,161 @@ use crate::page::{Bitmap, MediaBox, PageEngine, PageNo, Scale};
 /// DPI de impressão da v1 (user space PDF = 72 DPI).
 pub const PRINT_DPI: f32 = 200.0;
 const PDF_USER_SPACE_DPI: f32 = 72.0;
-#[cfg(any(not(target_os = "macos"), test))]
+/// Teto do stepper de cópias: limita tempo de montagem e tamanho do PDF.
+pub const MAX_COPIES: u32 = 99;
 static PRINT_FILE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("{0}")]
 pub struct PrintError(pub String);
 
+/// Intervalo do diálogo de impressão (v1: sem lista livre tipo "1-3, 5").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrintRange {
+    #[default]
+    All,
+    Current(PageNo),
+    FromTo {
+        from: PageNo,
+        to: PageNo,
+    },
+}
+
+/// Orientação do diálogo; `Auto` mantém cada página como está.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrintOrientation {
+    #[default]
+    Auto,
+    Portrait,
+    Landscape,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PrintJob {
-    pub page: PageNo,
-    pub scale: Scale,
+pub struct PrintSelection {
+    pub range: PrintRange,
+    pub copies: u32,
+    pub orientation: PrintOrientation,
 }
 
 pub fn print_scale(dpi: f32) -> Scale {
     Scale::from_factor(dpi / PDF_USER_SPACE_DPI)
 }
 
-/// N páginas → N jobs na ordem, sem IO.
-pub fn print_pages(page_count: u32, dpi: f32) -> Vec<PrintJob> {
-    let scale = print_scale(dpi);
-    (0..page_count)
-        .map(|index| PrintJob {
-            page: PageNo::from_index(index),
-            scale,
-        })
-        .collect()
+/// Monta o PDF da seleção do diálogo: filtra o intervalo, aplica a orientação e
+/// repete cada página `copies` vezes (cópias assadas no PDF, 1..=MAX_COPIES).
+pub fn print_selection_pdf(
+    engine: &impl PageEngine,
+    selection: PrintSelection,
+) -> Result<Vec<u8>, PrintError> {
+    let pages = resolve_range(selection.range, engine.page_count())?;
+    let scale = print_scale(PRINT_DPI);
+    let mut rendered = Vec::with_capacity(pages.len());
+    for page in pages {
+        let media = engine
+            .media(page)
+            .map_err(|err| PrintError(err.to_string()))?;
+        let surface = engine
+            .render(page, scale)
+            .map_err(|err| PrintError(err.to_string()))?;
+        rendered.push(apply_orientation(
+            &surface.bitmap,
+            media,
+            selection.orientation,
+        )?);
+    }
+    assemble_print_pages(&rendered, selection.copies)
 }
 
-pub fn print_document(engine: &impl PageEngine) -> Result<Vec<u8>, PrintError> {
-    let jobs = print_pages(engine.page_count(), PRINT_DPI);
-    assemble_print_pages(
-        jobs.len(),
-        jobs.into_iter().map(|job| {
-            let media = engine
-                .media(job.page)
-                .map_err(|err| PrintError(err.to_string()))?;
-            let surface = engine
-                .render(job.page, job.scale)
-                .map_err(|err| PrintError(err.to_string()))?;
-            Ok((surface.bitmap, media))
-        }),
-    )
+/// Intervalo → páginas em ordem; valida contra o total (`PageNo` é 0-based).
+pub fn resolve_range(range: PrintRange, page_count: u32) -> Result<Vec<PageNo>, PrintError> {
+    if page_count == 0 {
+        return Err(PrintError("nenhuma página para imprimir".into()));
+    }
+    let valid = |page: PageNo| page.index() < page_count;
+    match range {
+        PrintRange::All => Ok((0..page_count).map(PageNo::from_index).collect()),
+        PrintRange::Current(page) if valid(page) => Ok(vec![page]),
+        PrintRange::FromTo { from, to }
+            if valid(from) && valid(to) && from.index() <= to.index() =>
+        {
+            Ok((from.index()..=to.index())
+                .map(PageNo::from_index)
+                .collect())
+        }
+        _ => Err(PrintError("intervalo de páginas inválido".into())),
+    }
+}
+
+/// Retrato gira páginas paisagem (e vice-versa); quadrada e `Auto` não mexem.
+fn apply_orientation(
+    bitmap: &Bitmap,
+    media: MediaBox,
+    orientation: PrintOrientation,
+) -> Result<(Bitmap, MediaBox), PrintError> {
+    let landscape = media.width > media.height;
+    let portrait = media.height > media.width;
+    let rotate = matches!(
+        (orientation, landscape, portrait),
+        (PrintOrientation::Portrait, true, _) | (PrintOrientation::Landscape, _, true)
+    );
+    if !rotate {
+        return Ok((bitmap.clone(), media));
+    }
+    let (rgba, width, height) = rotate_rgba_90_cw(&bitmap.rgba, bitmap.width, bitmap.height)?;
+    Ok((
+        Bitmap {
+            width,
+            height,
+            rgba,
+        },
+        MediaBox {
+            width: media.height,
+            height: media.width,
+        },
+    ))
+}
+
+fn rotate_rgba_90_cw(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<(Vec<u8>, u32, u32), PrintError> {
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| PrintError("bitmap grande demais".into()))?;
+    if rgba.len() != expected || width == 0 || height == 0 {
+        return Err(PrintError("bitmap RGBA incompleto".into()));
+    }
+    let (w, h) = (width as usize, height as usize);
+    let mut out = vec![0u8; expected];
+    for y in 0..w {
+        for x in 0..h {
+            let src = ((h - 1 - x) * w + y) * 4;
+            let dst = (y * h + x) * 4;
+            out[dst..dst + 4].copy_from_slice(&rgba[src..src + 4]);
+        }
+    }
+    Ok((out, height, width))
 }
 
 #[cfg(test)]
-pub fn assemble_print_pdf(pages: &[(Bitmap, MediaBox)]) -> Result<Vec<u8>, PrintError> {
-    assemble_print_pages(
-        pages.len(),
-        pages
-            .iter()
-            .map(|(bitmap, media)| Ok((bitmap.clone(), *media))),
-    )
+pub fn assemble_test_pdf(pages: &[(Bitmap, MediaBox)], copies: u32) -> Result<Vec<u8>, PrintError> {
+    assemble_print_pages(pages, copies)
 }
 
-fn assemble_print_pages<I>(count: usize, pages: I) -> Result<Vec<u8>, PrintError>
-where
-    I: IntoIterator<Item = Result<(Bitmap, MediaBox), PrintError>>,
-{
-    if count == 0 {
+/// Páginas únicas → 1 Image XObject cada, compartilhado pelas `copies` cópias.
+fn assemble_print_pages(pages: &[(Bitmap, MediaBox)], copies: u32) -> Result<Vec<u8>, PrintError> {
+    if pages.is_empty() {
         return Err(PrintError("nenhuma página para imprimir".into()));
     }
+    let copies = copies.clamp(1, MAX_COPIES) as usize;
+    let total = pages
+        .len()
+        .checked_mul(copies)
+        .ok_or_else(|| PrintError("documento grande demais para imprimir".into()))?;
+    let total_count = i32::try_from(total)
+        .map_err(|_| PrintError("documento grande demais para imprimir".into()))?;
 
     let mut pdf = Pdf::new();
     let catalog_id = Ref::new(1);
@@ -92,46 +183,33 @@ where
         id
     };
 
-    let slots: Vec<(Ref, Ref, Ref)> = (0..count).map(|_| (alloc(), alloc(), alloc())).collect();
+    let image_ids: Vec<Ref> = (0..pages.len()).map(|_| alloc()).collect();
+    let slots: Vec<(Ref, Ref)> = (0..total).map(|_| (alloc(), alloc())).collect();
     let kids: Vec<Ref> = slots.iter().map(|slot| slot.0).collect();
-    let page_count = i32::try_from(count)
-        .map_err(|_| PrintError("documento grande demais para imprimir".into()))?;
 
     pdf.catalog(catalog_id).pages(page_tree_id);
-    pdf.pages(page_tree_id).kids(kids).count(page_count);
+    pdf.pages(page_tree_id).kids(kids).count(total_count);
 
-    let mut pages = pages.into_iter();
-    for (index, slot) in slots.into_iter().enumerate() {
-        let (bitmap, media) = pages
-            .next()
-            .ok_or_else(|| PrintError("página em falta".into()))??;
-        write_print_page(&mut pdf, page_tree_id, slot, index, &bitmap, media)?;
+    for (index, (bitmap, _)) in pages.iter().enumerate() {
+        write_print_image(&mut pdf, image_ids[index], bitmap)?;
+    }
+    for (slot_index, (page_id, content_id)) in slots.into_iter().enumerate() {
+        let unique = slot_index / copies;
+        write_print_page(
+            &mut pdf,
+            page_tree_id,
+            page_id,
+            content_id,
+            image_ids[unique],
+            unique,
+            &pages[unique].1,
+        )?;
     }
 
     Ok(pdf.finish())
 }
 
-fn write_print_page(
-    pdf: &mut Pdf,
-    page_tree_id: Ref,
-    slot: (Ref, Ref, Ref),
-    index: usize,
-    bitmap: &Bitmap,
-    media: MediaBox,
-) -> Result<(), PrintError> {
-    let (page_id, image_id, content_id) = slot;
-    let width_pt = finite_positive(media.width)?;
-    let height_pt = finite_positive(media.height)?;
-    let name = format!("Im{}", index + 1);
-    let image_name = Name(name.as_bytes());
-
-    let mut page = pdf.page(page_id);
-    page.media_box(Rect::new(0.0, 0.0, width_pt, height_pt));
-    page.parent(page_tree_id);
-    page.contents(content_id);
-    page.resources().x_objects().pair(image_name, image_id);
-    page.finish();
-
+fn write_print_image(pdf: &mut Pdf, image_id: Ref, bitmap: &Bitmap) -> Result<(), PrintError> {
     let rgb = rgba_to_rgb(&bitmap.rgba, bitmap.width, bitmap.height)?;
     let compressed = compress_to_vec_zlib(&rgb, 6);
     let width =
@@ -145,6 +223,29 @@ fn write_print_page(
     image.color_space().device_rgb();
     image.bits_per_component(8);
     image.finish();
+    Ok(())
+}
+
+fn write_print_page(
+    pdf: &mut Pdf,
+    page_tree_id: Ref,
+    page_id: Ref,
+    content_id: Ref,
+    image_id: Ref,
+    image_index: usize,
+    media: &MediaBox,
+) -> Result<(), PrintError> {
+    let width_pt = finite_positive(media.width)?;
+    let height_pt = finite_positive(media.height)?;
+    let name = format!("Im{}", image_index + 1);
+    let image_name = Name(name.as_bytes());
+
+    let mut page = pdf.page(page_id);
+    page.media_box(Rect::new(0.0, 0.0, width_pt, height_pt));
+    page.parent(page_tree_id);
+    page.contents(content_id);
+    page.resources().x_objects().pair(image_name, image_id);
+    page.finish();
 
     let mut content = Content::new();
     content.save_state();
@@ -155,74 +256,8 @@ fn write_print_page(
     Ok(())
 }
 
-/// Mostra a folha de impressão do sistema sobre o Tsuro.
-///
-/// No Mac: `NSPrintPanel` com mini preview, impressora, papel e intervalo.
-/// Não abre Preview.app nem o handler padrão de PDF.
-pub fn present_print_pdf(bytes: &[u8], job_title: &str) -> Result<(), PrintError> {
-    if bytes.is_empty() {
-        return Err(PrintError("PDF de impressão vazio".into()));
-    }
-    let _ = job_title;
-    #[cfg(test)]
-    {
-        return Ok(());
-    }
-    #[cfg(all(target_os = "macos", not(test)))]
-    {
-        return macos_present_print_pdf(bytes, job_title);
-    }
-    #[cfg(all(not(target_os = "macos"), not(test)))]
-    {
-        return write_and_open_print_pdf(bytes, Path::new(job_title)).map(|_| ());
-    }
-    #[allow(unreachable_code)]
-    Ok(())
-}
-
-#[cfg(all(target_os = "macos", not(test)))]
-fn macos_present_print_pdf(bytes: &[u8], job_title: &str) -> Result<(), PrintError> {
-    use objc2::{AnyThread, MainThreadMarker};
-    use objc2_app_kit::{NSPrintInfo, NSPrintPanelOptions};
-    use objc2_foundation::{NSData, NSString};
-    use objc2_pdf_kit::{PDFDocument, PDFPrintScalingMode};
-
-    let mtm = MainThreadMarker::new().ok_or_else(|| {
-        PrintError("a folha de impressão precisa da thread principal".into())
-    })?;
-    let data = NSData::with_bytes(bytes);
-    let Some(document) = (unsafe { PDFDocument::initWithData(PDFDocument::alloc(), &data) }) else {
-        return Err(PrintError("não foi possível montar a folha de impressão".into()));
-    };
-    let print_info = NSPrintInfo::sharedPrintInfo();
-    let Some(operation) = (unsafe {
-        document.printOperationForPrintInfo_scalingMode_autoRotate(
-            Some(&print_info),
-            PDFPrintScalingMode::PageScaleDownToFit,
-            true,
-            mtm,
-        )
-    }) else {
-        return Err(PrintError("não foi possível preparar a folha de impressão".into()));
-    };
-    operation.setShowsPrintPanel(true);
-    operation.setShowsProgressPanel(true);
-    let title = NSString::from_str(job_title);
-    operation.setJobTitle(Some(&title));
-    let panel = operation.printPanel();
-    panel.setOptions(
-        NSPrintPanelOptions::ShowsPreview
-            | NSPrintPanelOptions::ShowsCopies
-            | NSPrintPanelOptions::ShowsPageRange
-            | NSPrintPanelOptions::ShowsPaperSize
-            | NSPrintPanelOptions::ShowsOrientation
-            | NSPrintPanelOptions::ShowsPageSetupAccessory,
-    );
-    let _printed = operation.runOperation();
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
+/// Rota de fuga do diálogo ("Abrir PDF"): grava o PDF da seleção em temp e abre
+/// no visualizador padrão, em todas as plataformas.
 pub fn write_and_open_print_pdf(bytes: &[u8], source: &Path) -> Result<PathBuf, PrintError> {
     let mut last_err = None;
     for _ in 0..8 {
@@ -256,7 +291,6 @@ pub fn write_and_open_print_pdf(bytes: &[u8], source: &Path) -> Result<PathBuf, 
     )))
 }
 
-#[cfg(any(not(target_os = "macos"), test))]
 pub fn print_temp_path(source: &Path) -> PathBuf {
     let stem = source
         .file_stem()
@@ -280,7 +314,6 @@ pub fn print_temp_path(source: &Path) -> PathBuf {
     ))
 }
 
-#[cfg(not(target_os = "macos"))]
 fn open_fallback_viewer(path: &Path) -> Result<(), PrintError> {
     let mut command = {
         #[cfg(target_os = "windows")]
@@ -290,7 +323,13 @@ fn open_fallback_viewer(path: &Path) -> Result<(), PrintError> {
             command.arg(path);
             command
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
+        {
+            let mut command = Command::new("open");
+            command.arg(path);
+            command
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
         {
             let mut command = Command::new("xdg-open");
             command.arg(path);
@@ -388,17 +427,9 @@ mod tests {
     }
 
     #[test]
-    fn print_pages_are_ordered_at_print_scale() {
-        let jobs = print_pages(3, PRINT_DPI);
-        assert_eq!(jobs.len(), 3);
-        assert_eq!(
-            jobs.iter().map(|job| job.page.index()).collect::<Vec<_>>(),
-            vec![0, 1, 2]
-        );
+    fn print_scale_matches_dpi_over_user_space() {
         let scale = print_scale(PRINT_DPI);
-        assert!(jobs.iter().all(|job| job.scale == scale));
         assert!((scale.factor() - PRINT_DPI / PDF_USER_SPACE_DPI).abs() < 0.002);
-        assert!(print_pages(0, PRINT_DPI).is_empty());
     }
 
     #[test]
@@ -419,7 +450,7 @@ mod tests {
                 },
             ),
         ];
-        let bytes = assemble_print_pdf(&pages).expect("pdf");
+        let bytes = assemble_test_pdf(&pages, 1).expect("pdf");
         let analysis = analyze_pdf(&bytes).expect("parse");
         assert_eq!(analysis.page_count_hint, Some(2));
         assert!(analysis.signatures.is_empty());
@@ -431,7 +462,115 @@ mod tests {
 
     #[test]
     fn assemble_print_pdf_rejects_empty() {
-        assert!(assemble_print_pdf(&[]).is_err());
+        assert!(assemble_test_pdf(&[], 1).is_err());
+    }
+
+    #[test]
+    fn copies_expand_pages_and_clamp() {
+        let pages = [(
+            solid_rgba(4, 4, [0, 255, 0]),
+            MediaBox {
+                width: 100.0,
+                height: 100.0,
+            },
+        )];
+        let bytes = assemble_test_pdf(&pages, 3).expect("pdf");
+        let analysis = analyze_pdf(&bytes).expect("parse");
+        assert_eq!(analysis.page_count_hint, Some(3));
+        assert_eq!(media_boxes(&bytes).len(), 3);
+        // 0 prende em 1; acima do teto prende em MAX_COPIES.
+        let one = assemble_test_pdf(&pages, 0).expect("pdf");
+        assert_eq!(media_boxes(&one).len(), 1);
+        let many = assemble_test_pdf(&pages, MAX_COPIES + 50).expect("pdf");
+        assert_eq!(media_boxes(&many).len(), MAX_COPIES as usize);
+    }
+
+    #[test]
+    fn resolve_range_covers_all_current_and_from_to() {
+        let all = resolve_range(PrintRange::All, 3).expect("all");
+        assert_eq!(
+            all.iter().map(|p| p.index()).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        let current =
+            resolve_range(PrintRange::Current(PageNo::from_index(1)), 3).expect("current");
+        assert_eq!(
+            current.iter().map(|p| p.index()).collect::<Vec<_>>(),
+            vec![1]
+        );
+        let span = resolve_range(
+            PrintRange::FromTo {
+                from: PageNo::from_index(1),
+                to: PageNo::from_index(2),
+            },
+            3,
+        )
+        .expect("span");
+        assert_eq!(
+            span.iter().map(|p| p.index()).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(resolve_range(PrintRange::All, 0).is_err());
+        assert!(resolve_range(PrintRange::Current(PageNo::from_index(5)), 3).is_err());
+        assert!(resolve_range(
+            PrintRange::FromTo {
+                from: PageNo::from_index(2),
+                to: PageNo::from_index(1),
+            },
+            3,
+        )
+        .is_err());
+        assert!(resolve_range(
+            PrintRange::FromTo {
+                from: PageNo::from_index(0),
+                to: PageNo::from_index(9),
+            },
+            3,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn orientation_rotates_bitmap_and_media() {
+        let wide = solid_rgba(4, 2, [255, 0, 0]);
+        let media = MediaBox {
+            width: 400.0,
+            height: 200.0,
+        };
+        // Paisagem pede paisagem: nada muda.
+        let (same, same_media) =
+            apply_orientation(&wide, media, PrintOrientation::Landscape).expect("same");
+        assert_eq!((same.width, same.height), (4, 2));
+        assert_eq!((same_media.width, same_media.height), (400.0, 200.0));
+        // Retrato gira: 4x2 vira 2x4, MediaBox troca.
+        let (tall, tall_media) =
+            apply_orientation(&wide, media, PrintOrientation::Portrait).expect("rot");
+        assert_eq!((tall.width, tall.height), (2, 4));
+        assert_eq!((tall_media.width, tall_media.height), (200.0, 400.0));
+        // Quadrada nunca gira.
+        let square = solid_rgba(3, 3, [0, 0, 255]);
+        let sq_media = MediaBox {
+            width: 100.0,
+            height: 100.0,
+        };
+        let (kept, _) =
+            apply_orientation(&square, sq_media, PrintOrientation::Portrait).expect("sq");
+        assert_eq!((kept.width, kept.height), (3, 3));
+    }
+
+    #[test]
+    fn rotate_90_cw_maps_corners() {
+        // 2x1: [A][B] vira 1x2 com A em cima (horário).
+        let rgba = vec![1, 0, 0, 255, 2, 0, 0, 255];
+        let (out, w, h) = rotate_rgba_90_cw(&rgba, 2, 1).expect("rot");
+        assert_eq!((w, h), (1, 2));
+        assert_eq!(out, vec![1, 0, 0, 255, 2, 0, 0, 255]);
+        // 1x2: [A]/[B] vira 2x1 [B][A].
+        let rgba = vec![1, 0, 0, 255, 2, 0, 0, 255];
+        let (out, w, h) = rotate_rgba_90_cw(&rgba, 1, 2).expect("rot");
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(out, vec![2, 0, 0, 255, 1, 0, 0, 255]);
+        assert!(rotate_rgba_90_cw(&[0u8; 3], 1, 1).is_err());
     }
 
     #[test]
@@ -452,15 +591,28 @@ mod tests {
     }
 
     #[test]
-    fn present_print_pdf_rejects_empty() {
-        assert!(present_print_pdf(&[], "doc").is_err());
-    }
-
-    #[test]
-    fn present_print_pdf_accepts_bytes_without_leaving_the_app() {
-        // Nos testes a folha nativa não abre; o caminho de produção no Mac
-        // usa PDFKit + NSPrintPanel (preview + impressora + papel).
-        present_print_pdf(b"%PDF-1.4 test", "guia-folio").expect("noop in tests");
+    fn print_selection_from_fixture_expands_range_and_copies() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../public/samples/guia-folio.pdf");
+        let bytes = std::fs::read(&path).expect("fixture PDF required");
+        let engine =
+            PdfiumEngine::open(std::sync::Arc::<[u8]>::from(bytes)).expect("fixture PDF required");
+        let last = engine.page_count().saturating_sub(1).min(1);
+        let span = last + 1;
+        let printed = print_selection_pdf(
+            &engine,
+            PrintSelection {
+                range: PrintRange::FromTo {
+                    from: PageNo::from_index(0),
+                    to: PageNo::from_index(last),
+                },
+                copies: 2,
+                orientation: PrintOrientation::Auto,
+            },
+        )
+        .expect("selection pdf");
+        let analysis = analyze_pdf(&printed).expect("parse");
+        assert_eq!(analysis.page_count_hint, Some(span * 2));
     }
 
     #[test]
@@ -470,7 +622,15 @@ mod tests {
         let bytes = std::fs::read(&path).expect("fixture PDF required");
         let engine =
             PdfiumEngine::open(std::sync::Arc::<[u8]>::from(bytes)).expect("fixture PDF required");
-        let printed = print_document(&engine).expect("print pdf");
+        let printed = print_selection_pdf(
+            &engine,
+            PrintSelection {
+                range: PrintRange::All,
+                copies: 1,
+                orientation: PrintOrientation::Auto,
+            },
+        )
+        .expect("print pdf");
         let analysis = analyze_pdf(&printed).expect("parse printed pdf");
         assert_eq!(analysis.page_count_hint, Some(engine.page_count()));
         let boxes = media_boxes(&printed);

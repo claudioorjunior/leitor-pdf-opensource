@@ -4031,17 +4031,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "objc2-pdf-kit"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c14ed801ae810c6ba487cedd7616bb48f9a8e37940042f57e862538e2c7db117"
-dependencies = [
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
-]
-
-[[package]]
 name = "objc2-quartz-core"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4664,6 +4653,15 @@ name = "presser"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
+
+[[package]]
+name = "printers"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9973d6bf0ed339da9230a83eccbd7c2564f392bdc80246853645e9a60efb38b0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "proc-macro-crate"
@@ -6722,12 +6720,9 @@ version = "0.1.1"
 dependencies = [
  "iced",
  "miniz_oxide 0.8.9",
- "objc2 0.6.4",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "objc2-pdf-kit",
  "pdf-writer",
  "pdfium-render",
+ "printers",
  "rfd",
  "thiserror 2.0.20",
  "tokio",

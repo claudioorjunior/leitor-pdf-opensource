@@ -1,5 +1,6 @@
 use iced::widget::{
-    button, column, container, image, row, scrollable, stack, svg, text, text_input, tooltip, Space,
+    button, column, container, image, mouse_area, pick_list, row, scrollable, stack, svg, text,
+    text_input, tooltip, Space,
 };
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding};
 use tsuro_sign::SignatureStatus;
@@ -7,7 +8,10 @@ use tsuro_sign::SignatureStatus;
 use crate::browse::{EmptyState, FsEntry};
 use crate::kiri::{self, Theme, Tokens};
 use crate::page::PageNo;
-use crate::session::{Message, NavCmd, Ready, Session, Zoom, ZoomFactor, THUMB_ROW};
+use crate::print::{PrintOrientation, MAX_COPIES};
+use crate::session::{
+    Message, NavCmd, PrintDialog, RangeMode, Ready, Session, Zoom, ZoomFactor, THUMB_ROW,
+};
 
 /// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
 pub const CHROME_HEIGHT: f32 = 46.0;
@@ -52,6 +56,11 @@ pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
         ..container::Style::default()
     });
     match session {
+        // Modal de impressão captura tudo; menu ⋯ nunca abre junto (fecha ao abrir).
+        Session::Ready(ready) if ready.print_dialog.is_some() => {
+            let dialog = ready.print_dialog.as_ref().expect("checked above");
+            stack![main, print_layer(ready, dialog, t)].into()
+        }
         // Overlay visual: só os botões capturam clique, o resto atravessa.
         Session::Ready(ready) if ready.overflow_open => {
             stack![main, overflow_layer(ready, t)].into()
@@ -358,7 +367,7 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         "Ajustar página inteira",
         Message::SetZoom(Zoom::Page),
     ));
-    items = items.push(print_menu_item(ready, t));
+    items = items.push(print_menu_item(t));
     if ready.selection_plain_text().is_some() {
         items = items.push(menu_item(t, "Copiar seleção", Message::CopySelection));
     }
@@ -396,22 +405,236 @@ fn menu_item(t: Tokens, label: &'static str, message: Message) -> Element<'stati
         .into()
 }
 
-/// ⋯ → Imprimir: rótulo muda enquanto o PDF é preparado (~200 DPI).
-fn print_menu_item(ready: &Ready, t: Tokens) -> Element<'static, Message> {
-    let label = if ready.print_busy {
-        "Preparando impressão…"
-    } else {
-        "Imprimir"
-    };
+/// ⋯ → Imprimir: abre o diálogo próprio.
+fn print_menu_item(t: Tokens) -> Element<'static, Message> {
     button(
-        row![kiri::ori!("print"), text(label).size(13)]
+        row![kiri::ori!("print"), text("Imprimir").size(13)]
             .spacing(8)
             .align_y(Alignment::Center),
     )
     .width(Length::Fill)
     .padding(Padding::from([8, 10]))
     .style(kiri::menu_item_style(t))
-    .on_press_maybe((!ready.print_busy).then_some(Message::Print))
+    .on_press(Message::OpenPrintDialog)
+    .into()
+}
+
+/// Modal de impressão: fundo fecha ao clicar, cartão captura sem efeito —
+/// nada atravessa para o documento atrás.
+fn print_layer<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Element<'a, Message> {
+    let dim = container(Space::with_width(Length::Fill))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(|_| container::Style {
+            background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.55))),
+            ..container::Style::default()
+        });
+    let card = container(mouse_area(print_card(ready, dialog, t)).on_press(Message::PrintNop))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center);
+    stack![mouse_area(dim).on_press(Message::ClosePrintDialog), card,].into()
+}
+
+fn print_card<'a>(ready: &'a Ready, dialog: &'a PrintDialog, t: Tokens) -> Element<'a, Message> {
+    let pages = dialog.preview_pages(ready.page_count(), ready.visible);
+    let at = dialog.preview.min(pages.len().saturating_sub(1));
+    let mut col = column![
+        row![
+            text("Imprimir").size(16),
+            Space::with_width(Length::Fill),
+            button(text("Fechar").size(13))
+                .style(kiri::menu_item_style(t))
+                .on_press_maybe((!dialog.busy).then_some(Message::ClosePrintDialog)),
+        ]
+        .align_y(Alignment::Center),
+        row![
+            print_preview(ready, dialog, &pages, at, t),
+            print_controls(dialog, t),
+        ]
+        .spacing(16),
+    ]
+    .spacing(12);
+    if let Some(err) = &dialog.error {
+        col = col.push(
+            text(format!("Não foi possível imprimir: {err}"))
+                .size(13)
+                .color(t.danger),
+        );
+    }
+    col = col.push(print_footer(dialog, t));
+    container(col)
+        .width(Length::Fixed(620.0))
+        .padding(16)
+        .style(kiri::menu_style(t))
+        .into()
+}
+
+/// Preview reaproveita o thumb do cache (escala de tela, sem render novo).
+fn print_preview<'a>(
+    ready: &'a Ready,
+    dialog: &'a PrintDialog,
+    pages: &[PageNo],
+    at: usize,
+    t: Tokens,
+) -> Element<'a, Message> {
+    let thumb: Element<'a, Message> =
+        match pages.get(at).and_then(|page| ready.thumb_surface(*page)) {
+            Some(surface) => image(surface.image.clone())
+                .width(Length::Fixed(220.0))
+                .into(),
+            None => container(text("carregando…").size(13).color(t.muted))
+                .width(Length::Fixed(220.0))
+                .height(Length::Fixed(280.0))
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .into(),
+        };
+    let pager = row![
+        button(kiri::ori!("chevron-left"))
+            .style(kiri::ibtn_style(t, false))
+            .on_press_maybe((!dialog.busy && at > 0).then_some(Message::PrintPreviewPrev)),
+        text(format!("{} de {}", at + 1, pages.len().max(1))).size(13),
+        button(kiri::ori!("chevron-right"))
+            .style(kiri::ibtn_style(t, false))
+            .on_press_maybe(
+                (!dialog.busy && at + 1 < pages.len()).then_some(Message::PrintPreviewNext)
+            ),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    column![thumb, pager]
+        .spacing(8)
+        .align_x(Alignment::Center)
+        .into()
+}
+
+fn print_controls(dialog: &PrintDialog, t: Tokens) -> Element<'_, Message> {
+    let busy = dialog.busy;
+    let printer: Element<'_, Message> = if dialog.printers_loading {
+        text("Carregando impressoras…")
+            .size(13)
+            .color(t.muted)
+            .into()
+    } else if dialog.printers.is_empty() {
+        text("Nenhuma impressora encontrada")
+            .size(13)
+            .color(t.warn)
+            .into()
+    } else {
+        let names: Vec<String> = dialog.printers.iter().map(|p| p.name.clone()).collect();
+        let selected = dialog.selected_printer().map(|p| p.name.clone());
+        pick_list(names.clone(), selected, move |name: String| {
+            Message::PrintSelectPrinter(names.iter().position(|n| *n == name).unwrap_or(0))
+        })
+        .placeholder("Impressora")
+        .width(Length::Fill)
+        .into()
+    };
+    let mut col = column![
+        section_title("Impressora", t),
+        printer,
+        section_title("Páginas", t),
+        row![
+            seg_button(t, "Todas", RangeMode::All, dialog, busy),
+            seg_button(t, "Atual", RangeMode::Current, dialog, busy),
+            seg_button(t, "De–Até", RangeMode::Custom, dialog, busy),
+        ]
+        .spacing(4),
+    ]
+    .spacing(6);
+    if dialog.range_mode == RangeMode::Custom {
+        col = col.push(
+            row![
+                text_input("De", &dialog.from_input)
+                    .on_input(Message::PrintSetFromInput)
+                    .width(Length::Fixed(64.0)),
+                text("até").size(13).color(t.muted),
+                text_input("Até", &dialog.to_input)
+                    .on_input(Message::PrintSetToInput)
+                    .width(Length::Fixed(64.0)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        );
+    }
+    col = col.push(section_title("Cópias", t));
+    col = col.push(
+        row![
+            button(kiri::ori!("minus"))
+                .style(kiri::ibtn_style(t, false))
+                .on_press_maybe((!busy && dialog.copies > 1).then_some(Message::PrintCopiesMinus)),
+            container(text(dialog.copies.to_string()).size(14))
+                .width(Length::Fixed(32.0))
+                .align_x(Alignment::Center),
+            button(kiri::ori!("plus"))
+                .style(kiri::ibtn_style(t, false))
+                .on_press_maybe(
+                    (!busy && dialog.copies < MAX_COPIES).then_some(Message::PrintCopiesPlus)
+                ),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    );
+    col = col.push(section_title("Orientação", t));
+    col = col.push(
+        row![
+            ori_button(t, "Automática", PrintOrientation::Auto, dialog, busy),
+            ori_button(t, "Retrato", PrintOrientation::Portrait, dialog, busy),
+            ori_button(t, "Paisagem", PrintOrientation::Landscape, dialog, busy),
+        ]
+        .spacing(4),
+    );
+    col.width(Length::Fill).into()
+}
+
+fn seg_button(
+    t: Tokens,
+    label: &'static str,
+    mode: RangeMode,
+    dialog: &PrintDialog,
+    busy: bool,
+) -> Element<'static, Message> {
+    button(text(label).size(13))
+        .style(kiri::ibtn_style(t, dialog.range_mode == mode))
+        .on_press_maybe((!busy).then_some(Message::PrintSetRangeMode(mode)))
+        .into()
+}
+
+fn ori_button(
+    t: Tokens,
+    label: &'static str,
+    orientation: PrintOrientation,
+    dialog: &PrintDialog,
+    busy: bool,
+) -> Element<'static, Message> {
+    button(text(label).size(13))
+        .style(kiri::ibtn_style(t, dialog.orientation == orientation))
+        .on_press_maybe((!busy).then_some(Message::PrintSetOrientation(orientation)))
+        .into()
+}
+
+fn print_footer(dialog: &PrintDialog, t: Tokens) -> Element<'static, Message> {
+    let busy = dialog.busy;
+    let label = if busy { "Enviando…" } else { "Imprimir" };
+    let secondary = |label: &'static str, message: Message| {
+        button(text(label).size(13))
+            .padding(Padding::from([8, 12]))
+            .style(kiri::menu_item_style(t))
+            .on_press_maybe((!busy).then_some(message))
+    };
+    row![
+        Space::with_width(Length::Fill),
+        secondary("Abrir PDF", Message::PrintOpenPdf),
+        secondary("Cancelar", Message::ClosePrintDialog),
+        button(text(label).size(13))
+            .padding(Padding::from([8, 12]))
+            .style(kiri::menu_item_style(t))
+            .on_press_maybe((!busy).then_some(Message::PrintSubmit)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
     .into()
 }
 
@@ -580,16 +803,9 @@ fn ready_body(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     if ready.signatures_open {
         panes = panes.push(signatures_panel(ready, t));
     }
-    // Status de impressão (⋯ → Imprimir): 1 linha no topo do corpo, fora do
-    // chrome — erro não descarrega o documento.
-    if ready.print_busy || ready.print_error.is_some() {
-        let status = match &ready.print_error {
-            Some(err) => text(format!("Não foi possível preparar a impressão: {err}"))
-                .size(13)
-                .color(t.danger),
-            None => text("Preparando impressão…").size(13).color(t.muted),
-        };
-        column![status, panes]
+    // Status pós-envio ("Enviado para …"): 1 linha no topo do corpo.
+    if let Some(status) = &ready.print_status {
+        column![text(status).size(13).color(t.muted), panes,]
             .spacing(8)
             .height(Length::Fill)
             .into()
