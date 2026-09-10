@@ -20,6 +20,11 @@ use crate::page::{
     EngineError, Glyph, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer, Viewport,
 };
 use crate::prefs::{read_theme, save_theme};
+use crate::print::{
+    print_selection_pdf, write_and_open_print_pdf, PrintOrientation, PrintRange, PrintSelection,
+    MAX_COPIES,
+};
+use crate::spool::{list_printers, spool_pdf, PrinterInfo};
 
 pub(crate) const THUMB_WIDTH: f32 = 120.0;
 pub(crate) const THUMB_ROW: f32 = 156.0;
@@ -302,6 +307,10 @@ pub struct Ready {
     pub theme: Theme,
     /// Menu ⋯ aberto. Só existe em `Ready`; zera ao trocar de documento.
     pub overflow_open: bool,
+    /// Diálogo de impressão aberto (`None` = fechado). Só existe em `Ready`.
+    pub print_dialog: Option<PrintDialog>,
+    /// Linha de status pós-envio ("Enviado para …"); limpa ao reabrir o diálogo.
+    pub print_status: Option<String>,
     pub pages_scroll_y: f32,
     recents: Vec<PathBuf>,
     /// DPR da janela: bitmap sai em px físicos (zoom CSS × isto).
@@ -318,6 +327,108 @@ pub struct Ready {
     page_data_inflight: HashSet<u32>,
     page_data_failed: HashSet<u32>,
     viewport: Viewport,
+}
+
+/// Modo de intervalo do diálogo (v1: sem lista livre tipo "1-3, 5").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RangeMode {
+    #[default]
+    All,
+    Current,
+    Custom,
+}
+
+/// Estado do diálogo de impressão próprio (⋯ → Imprimir).
+#[derive(Debug, Clone)]
+pub struct PrintDialog {
+    pub printers: Vec<PrinterInfo>,
+    pub printers_loading: bool,
+    pub selected: Option<usize>,
+    pub range_mode: RangeMode,
+    /// Campos "De"/"Até" em 1-based, como o usuário digitou.
+    pub from_input: String,
+    pub to_input: String,
+    pub copies: u32,
+    pub orientation: PrintOrientation,
+    /// Índice na lista resolvida (preview "página X de Y").
+    pub preview: usize,
+    pub busy: bool,
+    pub error: Option<String>,
+}
+
+impl PrintDialog {
+    fn fresh(page_count: u32, current: PageNo) -> Self {
+        let current_1 = current.index().saturating_add(1).min(page_count.max(1));
+        Self {
+            printers: Vec::new(),
+            printers_loading: true,
+            selected: None,
+            range_mode: RangeMode::default(),
+            from_input: current_1.to_string(),
+            to_input: current_1.to_string(),
+            copies: 1,
+            orientation: PrintOrientation::default(),
+            preview: 0,
+            busy: false,
+            error: None,
+        }
+    }
+
+    pub fn selected_printer(&self) -> Option<&PrinterInfo> {
+        self.selected.and_then(|index| self.printers.get(index))
+    }
+
+    /// Valida o diálogo → seleção assável no PDF.
+    pub fn selection(&self, page_count: u32, current: PageNo) -> Result<PrintSelection, String> {
+        let range = match self.range_mode {
+            RangeMode::All => PrintRange::All,
+            RangeMode::Current => PrintRange::Current(current),
+            RangeMode::Custom => {
+                let from = parse_1based(&self.from_input, page_count)?;
+                let to = parse_1based(&self.to_input, page_count)?;
+                if from > to {
+                    return Err("«De» maior que «Até»".into());
+                }
+                PrintRange::FromTo {
+                    from: PageNo::from_index(from - 1),
+                    to: PageNo::from_index(to - 1),
+                }
+            }
+        };
+        Ok(PrintSelection {
+            range,
+            copies: self.copies.clamp(1, MAX_COPIES),
+            orientation: self.orientation,
+        })
+    }
+
+    /// Páginas do preview; intervalo inválido mostra só a atual.
+    pub fn preview_pages(&self, page_count: u32, current: PageNo) -> Vec<PageNo> {
+        self.selection(page_count, current)
+            .ok()
+            .and_then(|selection| crate::print::resolve_range(selection.range, page_count).ok())
+            .filter(|pages| !pages.is_empty())
+            .unwrap_or_else(|| vec![current])
+    }
+}
+
+fn print_job_title(ready: &Ready) -> String {
+    ready
+        .source
+        .path()
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("documento")
+        .to_string()
+}
+
+fn parse_1based(input: &str, page_count: u32) -> Result<u32, String> {
+    input
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|page| (1..=page_count.max(1)).contains(page))
+        .ok_or_else(|| format!("use páginas de 1 até {}", page_count.max(1)))
 }
 
 struct PageCatalog {
@@ -515,6 +626,35 @@ pub enum Message {
     ToggleSignatures,
     TogglePages,
     ToggleOverflow,
+    /// ⋯ → Imprimir: abre o diálogo próprio e lista impressoras em background.
+    OpenPrintDialog,
+    /// Lista do SO pronta; pré-seleciona a default (ou a primeira).
+    PrintersLoaded(Vec<PrinterInfo>),
+    ClosePrintDialog,
+    PrintSelectPrinter(usize),
+    PrintSetRangeMode(RangeMode),
+    PrintSetFromInput(String),
+    PrintSetToInput(String),
+    PrintCopiesPlus,
+    PrintCopiesMinus,
+    PrintSetOrientation(PrintOrientation),
+    PrintPreviewPrev,
+    PrintPreviewNext,
+    /// Monta o PDF da seleção e faz spool; `doc_gen` precisa casar na volta.
+    PrintSubmit,
+    PrintSubmitted {
+        doc_gen: u64,
+        printer: String,
+        result: Result<u64, String>,
+    },
+    /// Rota de fuga: abre o PDF da seleção no visualizador padrão.
+    PrintOpenPdf,
+    PrintPdfOpened {
+        doc_gen: u64,
+        result: Result<String, String>,
+    },
+    /// Captura cliques no cartão do modal (sem efeito); o fundo fecha o diálogo.
+    PrintNop,
     SetTheme(Theme),
     /// Janela informou tamanho + identidade: ajusta viewport e reconsulta o DPR.
     WindowMetrics {
@@ -637,7 +777,28 @@ impl Session {
             Message::Close => self.close_document(),
             Message::Nav(cmd) => {
                 if let Session::Ready(ready) = self {
-                    ready.apply_nav(cmd);
+                    if ready.print_dialog.is_some() {
+                        // Com o modal aberto, as setas paginam o preview, não o documento.
+                        let count = ready.page_count();
+                        let current = ready.visible;
+                        if let Some(dialog) = ready.print_dialog.as_mut() {
+                            let pages = dialog.preview_pages(count, current);
+                            let last = pages.len().saturating_sub(1);
+                            dialog.preview = match cmd {
+                                NavCmd::Previous => dialog.preview.saturating_sub(1),
+                                NavCmd::Next => dialog.preview.saturating_add(1).min(last),
+                                NavCmd::First => 0,
+                                NavCmd::Last => last,
+                                NavCmd::GoTo(page) => pages
+                                    .iter()
+                                    .position(|listed| *listed == page)
+                                    .unwrap_or(dialog.preview)
+                                    .min(last),
+                            };
+                        }
+                    } else {
+                        ready.apply_nav(cmd);
+                    }
                 }
                 self.schedule_work()
             }
@@ -765,10 +926,12 @@ impl Session {
                                 ready.surfaces.insert(page, scale, surface);
                             } else if ready.prefetch_target() == Some((page, scale)) {
                                 ready.surfaces.insert(page, scale, surface);
-                            } else if ready.pages_open {
+                            } else if ready.pages_open || ready.print_preview_target() == Some(page)
+                            {
                                 if let Some(media) = ready.loaded_media(page) {
                                     if ready.thumb_scale_for(media) == scale
-                                        && ready.thumb_page_window().contains(&page)
+                                        && (ready.thumb_page_window().contains(&page)
+                                            || ready.print_preview_target() == Some(page))
                                     {
                                         ready.thumbs.insert(page, scale, surface);
                                     }
@@ -812,6 +975,271 @@ impl Session {
             Message::ToggleOverflow => {
                 if let Session::Ready(ready) = self {
                     ready.overflow_open = !ready.overflow_open;
+                }
+                Task::none()
+            }
+            Message::OpenPrintDialog => {
+                let Session::Ready(ready) = self else {
+                    return Task::none();
+                };
+                ready.overflow_open = false;
+                ready.print_status = None;
+                ready.print_dialog = Some(PrintDialog::fresh(ready.page_count(), ready.visible));
+                Task::batch([
+                    Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(list_printers)
+                                .await
+                                .unwrap_or_default()
+                        },
+                        Message::PrintersLoaded,
+                    ),
+                    self.schedule_work(),
+                ])
+            }
+            Message::PrintersLoaded(printers) => {
+                if let Session::Ready(ready) = self {
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        dialog.printers_loading = false;
+                        dialog.selected = printers
+                            .iter()
+                            .position(|printer| printer.is_default)
+                            .or(if printers.is_empty() { None } else { Some(0) });
+                        dialog.printers = printers;
+                    }
+                }
+                Task::none()
+            }
+            Message::ClosePrintDialog => {
+                if let Session::Ready(ready) = self {
+                    // Enviando: ignora (Esc) para não perder o resultado na volta.
+                    if ready
+                        .print_dialog
+                        .as_ref()
+                        .is_none_or(|dialog| !dialog.busy)
+                    {
+                        ready.print_dialog = None;
+                    }
+                }
+                Task::none()
+            }
+            Message::PrintSelectPrinter(index) => {
+                if let Session::Ready(ready) = self {
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        if !dialog.busy && index < dialog.printers.len() {
+                            dialog.selected = Some(index);
+                            dialog.error = None;
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::PrintSetRangeMode(mode) => {
+                if let Session::Ready(ready) = self {
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        if !dialog.busy {
+                            dialog.range_mode = mode;
+                            dialog.preview = 0;
+                            dialog.error = None;
+                        }
+                    }
+                }
+                // O alvo do preview pode ter mudado: agenda o thumb.
+                self.schedule_work()
+            }
+            Message::PrintSetFromInput(input) => {
+                if let Session::Ready(ready) = self {
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        if !dialog.busy {
+                            dialog.from_input = input;
+                            dialog.preview = 0;
+                        }
+                    }
+                }
+                self.schedule_work()
+            }
+            Message::PrintSetToInput(input) => {
+                if let Session::Ready(ready) = self {
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        if !dialog.busy {
+                            dialog.to_input = input;
+                            dialog.preview = 0;
+                        }
+                    }
+                }
+                self.schedule_work()
+            }
+            Message::PrintCopiesPlus => {
+                if let Session::Ready(ready) = self {
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        dialog.copies = dialog.copies.saturating_add(1).min(MAX_COPIES);
+                    }
+                }
+                Task::none()
+            }
+            Message::PrintCopiesMinus => {
+                if let Session::Ready(ready) = self {
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        dialog.copies = dialog.copies.saturating_sub(1).max(1);
+                    }
+                }
+                Task::none()
+            }
+            Message::PrintSetOrientation(orientation) => {
+                if let Session::Ready(ready) = self {
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        if !dialog.busy {
+                            dialog.orientation = orientation;
+                            dialog.error = None;
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::PrintPreviewPrev => {
+                if let Session::Ready(ready) = self {
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        dialog.preview = dialog.preview.saturating_sub(1);
+                    }
+                }
+                self.schedule_work()
+            }
+            Message::PrintPreviewNext => {
+                if let Session::Ready(ready) = self {
+                    let count = ready.page_count();
+                    let current = ready.visible;
+                    if let Some(dialog) = ready.print_dialog.as_mut() {
+                        let last = dialog.preview_pages(count, current).len().saturating_sub(1);
+                        dialog.preview = dialog.preview.saturating_add(1).min(last);
+                    }
+                }
+                self.schedule_work()
+            }
+            Message::PrintSubmit => {
+                let Session::Ready(ready) = self else {
+                    return Task::none();
+                };
+                if ready.print_dialog.as_ref().is_none_or(|dialog| dialog.busy) {
+                    return Task::none();
+                }
+                let page_count = ready.page_count();
+                let current = ready.visible;
+                let doc_gen = ready.open_gen;
+                let title = print_job_title(ready);
+                let engine = ready.engine.clone();
+                let Some(dialog) = ready.print_dialog.as_mut() else {
+                    return Task::none();
+                };
+                let selection = match dialog.selection(page_count, current) {
+                    Ok(selection) => selection,
+                    Err(err) => {
+                        dialog.error = Some(err);
+                        return Task::none();
+                    }
+                };
+                let Some(printer) = dialog.selected_printer().map(|info| info.name.clone()) else {
+                    dialog.error = Some("nenhuma impressora selecionada".into());
+                    return Task::none();
+                };
+                dialog.busy = true;
+                dialog.error = None;
+                let printer_msg = printer.clone();
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            match print_selection_pdf(&engine, selection) {
+                                Ok(pdf) => {
+                                    spool_pdf(&printer, &pdf, &title).map_err(|err| err.to_string())
+                                }
+                                Err(err) => Err(err.to_string()),
+                            }
+                        })
+                        .await
+                        .unwrap_or_else(|join| Err(join.to_string()))
+                    },
+                    move |result| Message::PrintSubmitted {
+                        doc_gen,
+                        printer: printer_msg.clone(),
+                        result,
+                    },
+                )
+            }
+            Message::PrintSubmitted {
+                doc_gen,
+                printer,
+                result,
+            } => {
+                if let Session::Ready(ready) = self {
+                    if doc_gen == ready.open_gen {
+                        match result {
+                            Ok(job) => {
+                                ready.print_dialog = None;
+                                ready.print_status =
+                                    Some(format!("Enviado para {printer} (job {job})"));
+                            }
+                            Err(err) => {
+                                if let Some(dialog) = ready.print_dialog.as_mut() {
+                                    dialog.busy = false;
+                                    dialog.error = Some(err);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Impressão não toca o cache de páginas: nada a reagendar.
+                Task::none()
+            }
+            Message::PrintOpenPdf => {
+                let Session::Ready(ready) = self else {
+                    return Task::none();
+                };
+                if ready.print_dialog.as_ref().is_none_or(|dialog| dialog.busy) {
+                    return Task::none();
+                }
+                let page_count = ready.page_count();
+                let current = ready.visible;
+                let doc_gen = ready.open_gen;
+                let source = ready.source.path().to_path_buf();
+                let engine = ready.engine.clone();
+                let Some(dialog) = ready.print_dialog.as_mut() else {
+                    return Task::none();
+                };
+                let selection = match dialog.selection(page_count, current) {
+                    Ok(selection) => selection,
+                    Err(err) => {
+                        dialog.error = Some(err);
+                        return Task::none();
+                    }
+                };
+                dialog.busy = true;
+                dialog.error = None;
+                Task::perform(
+                    async move {
+                        tokio::task::spawn_blocking(move || {
+                            match print_selection_pdf(&engine, selection) {
+                                Ok(pdf) => write_and_open_print_pdf(&pdf, &source)
+                                    .map(|path| path.display().to_string())
+                                    .map_err(|err| err.to_string()),
+                                Err(err) => Err(err.to_string()),
+                            }
+                        })
+                        .await
+                        .unwrap_or_else(|join| Err(join.to_string()))
+                    },
+                    move |result| Message::PrintPdfOpened { doc_gen, result },
+                )
+            }
+            Message::PrintNop => Task::none(),
+            Message::PrintPdfOpened { doc_gen, result } => {
+                if let Session::Ready(ready) = self {
+                    if doc_gen == ready.open_gen {
+                        if let Some(dialog) = ready.print_dialog.as_mut() {
+                            dialog.busy = false;
+                            if let Err(err) = result {
+                                dialog.error = Some(err);
+                            }
+                        }
+                    }
                 }
                 Task::none()
             }
@@ -1134,6 +1562,8 @@ pub(crate) fn keyboard_message(
         Key::Named(Named::PageDown | Named::ArrowRight) => Some(Message::Nav(NavCmd::Next)),
         Key::Named(Named::Home) => Some(Message::Nav(NavCmd::First)),
         Key::Named(Named::End) => Some(Message::Nav(NavCmd::Last)),
+        // Sem diálogo aberto o handler ignora; com foco em campo, o iced captura antes.
+        Key::Named(Named::Escape) => Some(Message::ClosePrintDialog),
         _ => None,
     }
 }
@@ -1200,6 +1630,15 @@ impl Ready {
     pub(crate) fn thumb_surface(&self, page: PageNo) -> Option<&CachedSurface> {
         let media = self.loaded_media(page)?;
         self.thumbs.get(page, self.thumb_scale_for(media))
+    }
+
+    /// Página atual do preview de impressão (`None` sem diálogo aberto).
+    fn print_preview_target(&self) -> Option<PageNo> {
+        let dialog = self.print_dialog.as_ref()?;
+        let pages = dialog.preview_pages(self.pages.total, self.visible);
+        pages
+            .get(dialog.preview.min(pages.len().saturating_sub(1)))
+            .copied()
     }
 
     pub(crate) fn visible_surface(&self) -> Option<&CachedSurface> {
@@ -1374,15 +1813,19 @@ impl Ready {
         self.surfaces.retain_pages(&keep);
         self.surfaces
             .enforce_neighbor_budget(self.visible.index(), NEIGHBOR_CACHE_BUDGET);
-        if !self.pages_open {
-            self.thumbs.clear();
-            return;
+        // Sem painel e sem diálogo: limpa tudo (comportamento antigo).
+        // Com diálogo: retém o alvo do preview mesmo de painel fechado.
+        let mut thumb_keep: HashSet<u32> = if self.pages_open {
+            self.thumb_page_window()
+                .into_iter()
+                .map(|page| page.index())
+                .collect()
+        } else {
+            HashSet::new()
+        };
+        if let Some(page) = self.print_preview_target() {
+            thumb_keep.insert(page.index());
         }
-        let thumb_keep: HashSet<u32> = self
-            .thumb_page_window()
-            .into_iter()
-            .map(|page| page.index())
-            .collect();
         self.thumbs.retain_pages(&thumb_keep);
     }
 
@@ -1444,14 +1887,25 @@ impl Ready {
         if !self.render_inflight.is_empty() || !self.page_data_inflight.is_empty() {
             return Task::none();
         }
-        if !self.pages_open {
+        if !self.pages_open && self.print_dialog.is_none() {
             return Task::none();
         }
         let reading_ready = self.has_page_data(self.visible) || self.visible_surface().is_some();
         if !reading_ready {
             return Task::none();
         }
-        for page in self.thumb_page_window() {
+        // Alvo do preview primeiro; janela do painel em seguida (se aberto).
+        let mut targets = if self.pages_open {
+            self.thumb_page_window()
+        } else {
+            Vec::new()
+        };
+        if let Some(target) = self.print_preview_target() {
+            if !targets.contains(&target) {
+                targets.insert(0, target);
+            }
+        }
+        for page in targets {
             let Some(media) = self.loaded_media(page) else {
                 continue;
             };
@@ -1515,6 +1969,8 @@ impl Document {
             render_scale: 1.0,
             theme: Theme::Dark,
             overflow_open: false,
+            print_dialog: None,
+            print_status: None,
             open_gen: 0,
             render_gen: 1,
             surfaces: SurfaceCache::default(),
@@ -2525,5 +2981,421 @@ mod tests {
             Session::Empty(empty) => assert_eq!(empty.render_scale, 2.0),
             other => panic!("expected Empty, got {other:?}"),
         }
+    }
+
+    fn open_dialog() -> Session {
+        let Some(mut ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        ready.overflow_open = true;
+        ready.print_status = Some("status antigo".into());
+        let mut session = Session::Ready(ready);
+        apply(&mut session, Message::OpenPrintDialog);
+        apply(
+            &mut session,
+            Message::PrintersLoaded(vec![
+                PrinterInfo {
+                    name: "Laser".into(),
+                    is_default: false,
+                },
+                PrinterInfo {
+                    name: "Jato".into(),
+                    is_default: true,
+                },
+            ]),
+        );
+        session
+    }
+
+    fn dialog(session: &Session) -> &PrintDialog {
+        let Session::Ready(ready) = session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        ready.print_dialog.as_ref().expect("dialog open")
+    }
+
+    #[test]
+    fn print_dialog_on_empty_is_noop() {
+        let mut session = Session::empty();
+        apply(&mut session, Message::OpenPrintDialog);
+        assert!(matches!(session, Session::Empty(_)));
+        apply(&mut session, Message::PrintSubmit);
+        assert!(matches!(session, Session::Empty(_)));
+        apply(&mut session, Message::ClosePrintDialog);
+        assert!(matches!(session, Session::Empty(_)));
+    }
+
+    #[test]
+    fn open_dialog_resets_and_preselects_default_printer() {
+        let session = open_dialog();
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        assert!(!ready.overflow_open);
+        assert!(ready.print_status.is_none());
+        let dialog = dialog(&session);
+        assert!(!dialog.printers_loading);
+        assert_eq!(dialog.selected, Some(1));
+        assert_eq!(dialog.copies, 1);
+        assert_eq!(dialog.range_mode, RangeMode::All);
+        assert!(!dialog.busy);
+    }
+
+    #[test]
+    fn printers_loaded_without_default_selects_first() {
+        let Some(ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        let mut session = Session::Ready(ready);
+        apply(&mut session, Message::OpenPrintDialog);
+        apply(
+            &mut session,
+            Message::PrintersLoaded(vec![PrinterInfo {
+                name: "Só".into(),
+                is_default: false,
+            }]),
+        );
+        assert_eq!(dialog(&session).selected, Some(0));
+        apply(&mut session, Message::PrintersLoaded(vec![]));
+        let d = dialog(&session);
+        assert!(d.selected.is_none());
+        assert!(!d.printers_loading);
+    }
+
+    #[test]
+    fn dialog_controls_update_state() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintSelectPrinter(0));
+        assert_eq!(dialog(&session).selected, Some(0));
+        apply(&mut session, Message::PrintSelectPrinter(9));
+        assert_eq!(dialog(&session).selected, Some(0));
+        apply(&mut session, Message::PrintSetRangeMode(RangeMode::Custom));
+        apply(&mut session, Message::PrintSetFromInput("2".into()));
+        apply(&mut session, Message::PrintSetToInput("1".into()));
+        let d = dialog(&session);
+        assert_eq!(d.range_mode, RangeMode::Custom);
+        apply(&mut session, Message::PrintCopiesPlus);
+        apply(&mut session, Message::PrintCopiesPlus);
+        apply(&mut session, Message::PrintCopiesMinus);
+        assert_eq!(dialog(&session).copies, 2);
+        apply(
+            &mut session,
+            Message::PrintSetOrientation(crate::print::PrintOrientation::Landscape),
+        );
+        assert_eq!(
+            dialog(&session).orientation,
+            crate::print::PrintOrientation::Landscape
+        );
+        apply(&mut session, Message::PrintPreviewNext);
+        apply(&mut session, Message::PrintPreviewPrev);
+        apply(&mut session, Message::ClosePrintDialog);
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        assert!(ready.print_dialog.is_none());
+    }
+
+    #[test]
+    fn copies_clamp_between_1_and_max() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintCopiesMinus);
+        assert_eq!(dialog(&session).copies, 1);
+        for _ in 0..200 {
+            apply(&mut session, Message::PrintCopiesPlus);
+        }
+        assert_eq!(dialog(&session).copies, crate::print::MAX_COPIES);
+    }
+
+    #[test]
+    fn submit_with_invalid_range_reports_error_and_stays_open() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintSetRangeMode(RangeMode::Custom));
+        apply(&mut session, Message::PrintSetFromInput("2".into()));
+        apply(&mut session, Message::PrintSetToInput("1".into()));
+        apply(&mut session, Message::PrintSubmit);
+        let d = dialog(&session);
+        assert!(!d.busy);
+        assert_eq!(d.error.as_deref(), Some("«De» maior que «Até»"));
+    }
+
+    #[test]
+    fn submit_without_printer_reports_error() {
+        let Some(ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        let mut session = Session::Ready(ready);
+        apply(&mut session, Message::OpenPrintDialog);
+        apply(&mut session, Message::PrintersLoaded(vec![]));
+        apply(&mut session, Message::PrintSubmit);
+        let d = dialog(&session);
+        assert!(!d.busy);
+        assert_eq!(d.error.as_deref(), Some("nenhuma impressora selecionada"));
+    }
+
+    #[test]
+    fn submit_marks_busy_and_second_submit_is_ignored() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintSubmit);
+        assert!(dialog(&session).busy);
+        apply(&mut session, Message::PrintSetRangeMode(RangeMode::Current));
+        assert_eq!(dialog(&session).range_mode, RangeMode::All);
+        assert!(dialog(&session).busy);
+    }
+
+    #[test]
+    fn submitted_ok_closes_dialog_and_sets_status() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintSubmit);
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        let doc_gen = ready.open_gen;
+        apply(
+            &mut session,
+            Message::PrintSubmitted {
+                doc_gen,
+                printer: "Jato".into(),
+                result: Ok(7),
+            },
+        );
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        assert!(ready.print_dialog.is_none());
+        assert_eq!(
+            ready.print_status.as_deref(),
+            Some("Enviado para Jato (job 7)")
+        );
+    }
+
+    #[test]
+    fn submitted_err_keeps_dialog_open_with_error() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintSubmit);
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        let doc_gen = ready.open_gen;
+        apply(
+            &mut session,
+            Message::PrintSubmitted {
+                doc_gen,
+                printer: "Jato".into(),
+                result: Err("spool cheio".into()),
+            },
+        );
+        let d = dialog(&session);
+        assert!(!d.busy);
+        assert_eq!(d.error.as_deref(), Some("spool cheio"));
+    }
+
+    #[test]
+    fn submitted_with_stale_doc_gen_is_ignored() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintSubmit);
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        let stale = ready.open_gen.wrapping_add(1);
+        apply(
+            &mut session,
+            Message::PrintSubmitted {
+                doc_gen: stale,
+                printer: "Jato".into(),
+                result: Err("tarde demais".into()),
+            },
+        );
+        let d = dialog(&session);
+        assert!(d.busy);
+        assert!(d.error.is_none());
+    }
+
+    #[test]
+    fn open_pdf_hatch_keeps_dialog_open() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintOpenPdf);
+        assert!(dialog(&session).busy);
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        let doc_gen = ready.open_gen;
+        apply(
+            &mut session,
+            Message::PrintPdfOpened {
+                doc_gen,
+                result: Ok("/tmp/x.pdf".into()),
+            },
+        );
+        let d = dialog(&session);
+        assert!(!d.busy);
+        assert!(d.error.is_none());
+    }
+
+    #[test]
+    fn dialog_preview_pages_follow_range() {
+        let mut session = open_dialog();
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready, got {session:?}");
+        };
+        let count = ready.page_count();
+        let current = ready.visible;
+        let pages = dialog(&session).preview_pages(count, current);
+        assert_eq!(pages.len() as u32, count);
+        apply(&mut session, Message::PrintSetRangeMode(RangeMode::Current));
+        let pages = dialog(&session).preview_pages(count, current);
+        assert_eq!(pages, vec![current]);
+        apply(&mut session, Message::PrintSetRangeMode(RangeMode::Custom));
+        apply(&mut session, Message::PrintSetFromInput("999".into()));
+        let pages = dialog(&session).preview_pages(count, current);
+        assert_eq!(pages, vec![current]);
+    }
+
+    #[test]
+    fn escape_maps_to_close_dialog() {
+        use iced::event::Status;
+        use iced::keyboard::{key::Named, Key, Modifiers};
+        assert!(matches!(
+            keyboard_message(
+                Key::Named(Named::Escape),
+                Modifiers::default(),
+                Status::Ignored
+            ),
+            Some(Message::ClosePrintDialog)
+        ));
+    }
+
+    #[test]
+    fn close_while_busy_is_ignored() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintSubmit);
+        apply(&mut session, Message::ClosePrintDialog);
+        assert!(dialog(&session).busy);
+    }
+
+    #[test]
+    fn nop_keeps_dialog_open() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::PrintNop);
+        assert!(!dialog(&session).busy);
+    }
+
+    #[test]
+    fn nav_pages_preview_with_dialog_open() {
+        let mut session = open_dialog();
+        apply(&mut session, Message::Nav(NavCmd::Next));
+        assert_eq!(dialog(&session).preview, 1);
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready");
+        };
+        assert_eq!(ready.visible, PageNo::first());
+        apply(&mut session, Message::Nav(NavCmd::Previous));
+        assert_eq!(dialog(&session).preview, 0);
+        apply(&mut session, Message::Nav(NavCmd::Last));
+        assert_eq!(dialog(&session).preview, 1);
+        apply(&mut session, Message::Nav(NavCmd::First));
+        assert_eq!(dialog(&session).preview, 0);
+        apply(
+            &mut session,
+            Message::Nav(NavCmd::GoTo(PageNo::from_index(1))),
+        );
+        assert_eq!(dialog(&session).preview, 1);
+        apply(&mut session, Message::ClosePrintDialog);
+        apply(&mut session, Message::Nav(NavCmd::Next));
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready");
+        };
+        assert_eq!(ready.visible, PageNo::from_index(1));
+    }
+
+    #[test]
+    fn rendered_inserts_preview_thumb_with_panel_closed() {
+        if sample_ready().is_none_or(|ready| ready.page_count() < 2) {
+            panic!("fixture PDF required");
+        }
+        let mut session = open_dialog();
+        // Alvo fora da janela inicial: página 2 em modo De–Até.
+        apply(&mut session, Message::PrintSetRangeMode(RangeMode::Custom));
+        apply(&mut session, Message::PrintSetFromInput("2".into()));
+        apply(&mut session, Message::PrintSetToInput("2".into()));
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        assert!(!ready.pages_open);
+        let page = PageNo::from_index(1);
+        // Media além da primeira é lazy: semeia como os demais testes de thumb.
+        let media = ready.loaded_media(PageNo::first()).expect("media");
+        ready.pages.media[1] = Some(media);
+        let thumb_scale = ready.thumb_scale_for(media);
+        assert_ne!(ready.page_scale(page), thumb_scale);
+        let (doc_gen, render_gen) = (ready.open_gen, ready.render_gen);
+        apply(
+            &mut session,
+            Message::Rendered {
+                page,
+                scale: thumb_scale,
+                doc_gen,
+                render_gen,
+                surface: Some(fake_surface(page, thumb_scale)),
+            },
+        );
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready");
+        };
+        assert!(ready.thumb_surface(page).is_some());
+    }
+
+    #[test]
+    fn evict_keeps_preview_thumb_and_drops_others() {
+        let mut session = open_dialog();
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        assert!(!ready.pages_open);
+        let current = PageNo::from_index(0);
+        let other = PageNo::from_index(1);
+        let media0 = ready.loaded_media(current).expect("media");
+        ready.pages.media[1] = Some(media0);
+        for page in [current, other] {
+            let media = ready.loaded_media(page).expect("media");
+            let scale = ready.thumb_scale_for(media);
+            ready.thumbs.insert(page, scale, fake_surface(page, scale));
+        }
+        let (doc_gen, render_gen) = (ready.open_gen, ready.render_gen);
+        apply(
+            &mut session,
+            Message::Rendered {
+                page: current,
+                scale: Scale::from_factor(9.0),
+                doc_gen,
+                render_gen,
+                surface: None,
+            },
+        );
+        let Session::Ready(ready) = &session else {
+            panic!("expected Ready");
+        };
+        assert!(ready.thumb_surface(current).is_some());
+        assert!(ready.thumb_surface(other).is_none());
+    }
+
+    #[test]
+    fn thumb_render_is_scheduled_for_preview_target() {
+        let mut session = open_dialog();
+        let Session::Ready(ready) = &mut session else {
+            panic!("expected Ready");
+        };
+        // Simula documento já lido: superfície da visível existe.
+        let visible = ready.visible;
+        let scale = ready.page_scale(visible);
+        ready
+            .surfaces
+            .insert(visible, scale, fake_surface(visible, scale));
+        let target = PageNo::from_index(0);
+        let media = ready.loaded_media(target).expect("media");
+        let key = render_key(target, ready.thumb_scale_for(media));
+        // `open_dialog` já agendou o render da visível; simula a worker livre.
+        ready.render_inflight.clear();
+        let _ = ready.request_thumb_render();
+        assert!(ready.render_inflight.contains(&key));
     }
 }

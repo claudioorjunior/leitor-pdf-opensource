@@ -35,6 +35,8 @@ Rust edition 2021, stable toolchain (`rust-toolchain.toml`). Viewer: `iced 0.13`
 - `crates/tsuro/src/browse.rs` — empty-state folders, recents, `EmptyState.theme` (`EmptyState`, `FsEntry`)
 - `crates/tsuro/src/page.rs` — public PDF types (`PageNo`, `MediaBox`, `Bitmap`, `TextLayer`)
 - `crates/tsuro/src/engine.rs` — `pub(crate)` Pdfium worker (thread + channel); stays private to the crate
+- `crates/tsuro/src/print.rs` — `pub(crate)` seleção + PDF de impressão (`PrintRange`, `PrintSelection`, `print_selection_pdf`)
+- `crates/tsuro/src/spool.rs` — `pub(crate)` fronteira com o crate `printers` (`PrinterInfo`, `list_printers`, `spool_pdf`)
 - `crates/tsuro/src/kiri.rs` — Kiri tokens + chrome styles (`Theme`, `Tokens`, `status_dot_color`); icons Ori in `assets/icons/ori/`
 - `crates/tsuro/src/prefs.rs` — `theme=dark|light` prefs file (mirrors `recents_file()` pattern)
 - `crates/tsuro-sign/` — PDF + CMS signature engine (`SigError`, `CertificateInfo`)

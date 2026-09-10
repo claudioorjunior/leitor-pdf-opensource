@@ -127,6 +127,7 @@ pub fn ori_icon<Message: 'static>(file: &str, size: f32) -> iced::Element<'stati
         "shield" => include_bytes!("../assets/icons/ori/shield.svg"),
         "home" => include_bytes!("../assets/icons/ori/home.svg"),
         "more" => include_bytes!("../assets/icons/ori/more.svg"),
+        "print" => include_bytes!("../assets/icons/ori/print.svg"),
         _ => include_bytes!("../assets/icons/ori/more.svg"),
     };
     svg(svg::Handle::from_memory(bytes))
