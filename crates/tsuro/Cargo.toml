@@ -17,3 +17,6 @@ rfd = "0.15"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "rt"] }
 unicode-normalization = "0.1"
+pdf-writer = "0.15"
+miniz_oxide = "0.8"
+printers = "2"
