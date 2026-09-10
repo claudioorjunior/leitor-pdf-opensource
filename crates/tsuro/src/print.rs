@@ -71,7 +71,7 @@ pub fn print_selection_pdf(
             .media(page)
             .map_err(|err| PrintError(err.to_string()))?;
         let surface = engine
-            .render(page, scale)
+            .render(page, scale, 0)
             .map_err(|err| PrintError(err.to_string()))?;
         rendered.push(apply_orientation(
             &surface.bitmap,
