@@ -297,6 +297,8 @@ pub struct Ready {
     pub signatures: PdfAnalysis,
     pub zoom: Zoom,
     pub visible: PageNo,
+    /// Vista girada em quartos de volta horários (0..=3, sessão; zera ao abrir).
+    pub view_rotation: u8,
     /// Draft 1-based page number shown in the nav pill.
     page_input: String,
     pub search: Search,
@@ -320,10 +322,10 @@ pub struct Ready {
     render_gen: u64,
     surfaces: SurfaceCache,
     thumbs: ThumbCache,
-    render_inflight: HashSet<(u32, u16)>,
-    render_inflight_gen: HashMap<(u32, u16), u64>,
-    render_inflight_doc: HashMap<(u32, u16), u64>,
-    failed: HashSet<(u32, u16)>,
+    render_inflight: HashSet<(u32, u16, u8)>,
+    render_inflight_gen: HashMap<(u32, u16, u8), u64>,
+    render_inflight_doc: HashMap<(u32, u16, u8), u64>,
+    failed: HashSet<(u32, u16, u8)>,
     page_data_inflight: HashSet<u32>,
     page_data_failed: HashSet<u32>,
     viewport: Viewport,
@@ -450,12 +452,13 @@ impl Clone for PageCatalog {
 #[derive(Clone)]
 pub(crate) struct CachedSurface {
     pub scale: Scale,
+    pub rotation: u8,
     pub image: image::Handle,
     rgba_bytes: usize,
 }
 
 impl CachedSurface {
-    fn from_page(surface: PageSurface) -> Self {
+    fn from_page(surface: PageSurface, rotation: u8) -> Self {
         let rgba_bytes = surface.bitmap.rgba.len();
         let image = image::Handle::from_rgba(
             surface.bitmap.width,
@@ -464,6 +467,7 @@ impl CachedSurface {
         );
         Self {
             scale: surface.scale,
+            rotation: rotation & 3,
             image,
             rgba_bytes,
         }
@@ -480,9 +484,9 @@ struct SurfaceCache {
 }
 
 impl SurfaceCache {
-    fn get(&self, page: PageNo, scale: Scale) -> Option<&CachedSurface> {
+    fn get(&self, page: PageNo, scale: Scale, rotation: u8) -> Option<&CachedSurface> {
         let cached = self.pages.get(&page.index())?;
-        if cached.scale == scale {
+        if cached.scale == scale && cached.rotation == rotation & 3 {
             Some(cached)
         } else {
             None
@@ -495,9 +499,9 @@ impl SurfaceCache {
         self.pages.get(&page.index())
     }
 
-    fn insert(&mut self, page: PageNo, _scale: Scale, surface: PageSurface) {
+    fn insert(&mut self, page: PageNo, _scale: Scale, rotation: u8, surface: PageSurface) {
         self.pages
-            .insert(page.index(), CachedSurface::from_page(surface));
+            .insert(page.index(), CachedSurface::from_page(surface, rotation));
     }
 
     fn retain_pages(&mut self, keep: &HashSet<u32>) {
@@ -549,7 +553,7 @@ impl ThumbCache {
         let idx = page.index();
         self.entries.retain(|(page, _), _| *page != idx);
         self.entries
-            .insert((idx, scale.key()), CachedSurface::from_page(surface));
+            .insert((idx, scale.key()), CachedSurface::from_page(surface, 0));
     }
 
     fn clear(&mut self) {
@@ -582,8 +586,8 @@ fn neighbor_page_set(visible: u32, total: u32) -> HashSet<u32> {
     keep
 }
 
-fn render_key(page: PageNo, scale: Scale) -> (u32, u16) {
-    (page.index(), scale.key())
+fn render_key(page: PageNo, scale: Scale, rotation: u8) -> (u32, u16, u8) {
+    (page.index(), scale.key(), rotation & 3)
 }
 
 #[derive(Debug, Clone)]
@@ -604,6 +608,8 @@ pub enum Message {
     PageInput(String),
     PageSubmit,
     SetZoom(Zoom),
+    /// Gira a vista 90° no sentido horário (ciclo 0→1→2→3→0).
+    RotateView,
     SetViewport(Viewport),
     SearchChanged(String),
     PointerDown {
@@ -619,6 +625,7 @@ pub enum Message {
     Rendered {
         page: PageNo,
         scale: Scale,
+        rotation: u8,
         doc_gen: u64,
         render_gen: u64,
         surface: Option<PageSurface>,
@@ -822,6 +829,14 @@ impl Session {
                 }
                 self.schedule_work()
             }
+            Message::RotateView => {
+                if let Session::Ready(ready) = self {
+                    ready.view_rotation = (ready.view_rotation + 1) & 3;
+                    ready.overflow_open = false;
+                    ready.bump_render_gen();
+                }
+                self.schedule_work()
+            }
             Message::SetViewport(viewport) => {
                 if let Session::Ready(ready) = self {
                     ready.viewport = viewport;
@@ -902,6 +917,7 @@ impl Session {
             Message::Rendered {
                 page,
                 scale,
+                rotation,
                 doc_gen,
                 render_gen,
                 surface,
@@ -910,7 +926,7 @@ impl Session {
                     if doc_gen != ready.open_gen {
                         return Task::none();
                     }
-                    let key = render_key(page, scale);
+                    let key = render_key(page, scale, rotation);
                     ready.render_inflight.remove(&key);
                     ready.render_inflight_gen.remove(&key);
                     ready.render_inflight_doc.remove(&key);
@@ -922,10 +938,13 @@ impl Session {
                         Some(surface) => {
                             ready.failed.remove(&key);
                             let current = ready.page_scale(page);
-                            if ready.visible == page && current == scale {
-                                ready.surfaces.insert(page, scale, surface);
-                            } else if ready.prefetch_target() == Some((page, scale)) {
-                                ready.surfaces.insert(page, scale, surface);
+                            if ready.visible == page
+                                && current == scale
+                                && ready.view_rotation & 3 == rotation & 3
+                            {
+                                ready.surfaces.insert(page, scale, rotation, surface);
+                            } else if ready.prefetch_target() == Some((page, scale, rotation & 3)) {
+                                ready.surfaces.insert(page, scale, rotation, surface);
                             } else if ready.pages_open || ready.print_preview_target() == Some(page)
                             {
                                 if let Some(media) = ready.loaded_media(page) {
@@ -1526,19 +1545,21 @@ fn render_task(
     engine: PdfiumEngine,
     page: PageNo,
     scale: Scale,
+    rotation: u8,
     doc_gen: u64,
     render_gen: u64,
 ) -> Task<Message> {
     Task::perform(
         async move {
-            match tokio::task::spawn_blocking(move || engine.render(page, scale)).await {
-                Ok(Ok(surface)) => (page, scale, Some(surface)),
-                _ => (page, scale, None),
+            match tokio::task::spawn_blocking(move || engine.render(page, scale, rotation)).await {
+                Ok(Ok(surface)) => (page, scale, rotation, Some(surface)),
+                _ => (page, scale, rotation, None),
             }
         },
-        move |(page, scale, surface)| Message::Rendered {
+        move |(page, scale, rotation, surface)| Message::Rendered {
             page,
             scale,
+            rotation,
             doc_gen,
             render_gen,
             surface,
@@ -1562,6 +1583,8 @@ pub(crate) fn keyboard_message(
         Key::Named(Named::PageDown | Named::ArrowRight) => Some(Message::Nav(NavCmd::Next)),
         Key::Named(Named::Home) => Some(Message::Nav(NavCmd::First)),
         Key::Named(Named::End) => Some(Message::Nav(NavCmd::Last)),
+        // R gira a vista; com foco em campo o iced captura antes (guarda de foco).
+        Key::Character("r" | "R") => Some(Message::RotateView),
         // Sem diálogo aberto o handler ignora; com foco em campo, o iced captura antes.
         Key::Named(Named::Escape) => Some(Message::ClosePrintDialog),
         _ => None,
@@ -1591,8 +1614,12 @@ impl Ready {
 
     /// Escala de render em px físicos: zoom CSS × DPR da janela.
     /// Guarda <1.0 (campo ainda desconhecido) como 1.0.
+    /// Ajuste usa a mídia girada: 90°/270° trocam largura ↔ altura.
     fn page_scale(&self, page: PageNo) -> Scale {
-        let css = self.zoom.scale(self.viewport, self.media(page)).factor();
+        let css = self
+            .zoom
+            .scale(self.viewport, self.rotated_media(page))
+            .factor();
         let dpr = if self.render_scale >= 1.0 {
             self.render_scale
         } else {
@@ -1614,6 +1641,19 @@ impl Ready {
         self.pages.media.get(page.index() as usize).and_then(|m| *m)
     }
 
+    /// Mídia na orientação da vista: rotação ímpar troca largura ↔ altura.
+    fn rotated_media(&self, page: PageNo) -> MediaBox {
+        let media = self.media(page);
+        if self.view_rotation & 1 == 1 {
+            MediaBox {
+                width: media.height,
+                height: media.width,
+            }
+        } else {
+            media
+        }
+    }
+
     fn has_page_data(&self, page: PageNo) -> bool {
         self.loaded_media(page).is_some()
             && matches!(self.pages.text.get(page.index() as usize), Some(Some(_)))
@@ -1624,7 +1664,7 @@ impl Ready {
     }
 
     pub(crate) fn surface(&self, page: PageNo, scale: Scale) -> Option<&CachedSurface> {
-        self.surfaces.get(page, scale)
+        self.surfaces.get(page, scale, self.view_rotation)
     }
 
     pub(crate) fn thumb_surface(&self, page: PageNo) -> Option<&CachedSurface> {
@@ -1649,7 +1689,8 @@ impl Ready {
 
     pub fn visible_render_failed(&self) -> bool {
         let scale = self.page_scale(self.visible);
-        self.failed.contains(&render_key(self.visible, scale))
+        self.failed
+            .contains(&render_key(self.visible, scale, self.view_rotation))
     }
 
     pub fn viewport(&self) -> Viewport {
@@ -1793,7 +1834,7 @@ impl Ready {
         pages
     }
 
-    fn prefetch_target(&self) -> Option<(PageNo, Scale)> {
+    fn prefetch_target(&self) -> Option<(PageNo, Scale, u8)> {
         if self.pages.total == 0 {
             return None;
         }
@@ -1805,7 +1846,7 @@ impl Ready {
         if !self.has_page_data(page) {
             return None;
         }
-        Some((page, self.page_scale(page)))
+        Some((page, self.page_scale(page), self.view_rotation))
     }
 
     fn evict_unused(&mut self) {
@@ -1838,8 +1879,9 @@ impl Ready {
         }
         let page = self.visible;
         let scale = self.page_scale(page);
-        let key = render_key(page, scale);
-        if self.surfaces.get(page, scale).is_some() || self.failed.contains(&key) {
+        let rotation = self.view_rotation;
+        let key = render_key(page, scale, rotation);
+        if self.surfaces.get(page, scale, rotation).is_some() || self.failed.contains(&key) {
             return None;
         }
         self.track_render(key);
@@ -1847,6 +1889,7 @@ impl Ready {
             self.engine.clone(),
             page,
             scale,
+            rotation,
             self.open_gen,
             self.render_gen,
         ))
@@ -1863,11 +1906,11 @@ impl Ready {
         {
             return None;
         }
-        let Some((page, scale)) = self.prefetch_target() else {
+        let Some((page, scale, rotation)) = self.prefetch_target() else {
             return None;
         };
-        let key = render_key(page, scale);
-        if self.surfaces.get(page, scale).is_some() || self.failed.contains(&key) {
+        let key = render_key(page, scale, rotation);
+        if self.surfaces.get(page, scale, rotation).is_some() || self.failed.contains(&key) {
             return None;
         }
         if !self.prefetch_fits_budget(page, scale) {
@@ -1878,6 +1921,7 @@ impl Ready {
             self.engine.clone(),
             page,
             scale,
+            rotation,
             self.open_gen,
             self.render_gen,
         ))
@@ -1910,7 +1954,7 @@ impl Ready {
                 continue;
             };
             let scale = self.thumb_scale_for(media);
-            let key = render_key(page, scale);
+            let key = render_key(page, scale, 0);
             if self.thumbs.get(page, scale).is_some() || self.failed.contains(&key) {
                 continue;
             }
@@ -1919,6 +1963,7 @@ impl Ready {
                 self.engine.clone(),
                 page,
                 scale,
+                0,
                 self.open_gen,
                 self.render_gen,
             );
@@ -1926,7 +1971,7 @@ impl Ready {
         Task::none()
     }
 
-    fn track_render(&mut self, key: (u32, u16)) {
+    fn track_render(&mut self, key: (u32, u16, u8)) {
         self.render_inflight.insert(key);
         self.render_inflight_gen.insert(key, self.render_gen);
         self.render_inflight_doc.insert(key, self.open_gen);
@@ -1959,6 +2004,7 @@ impl Document {
             signatures,
             zoom: Zoom::Width,
             visible: PageNo::first(),
+            view_rotation: 0,
             page_input: String::new(),
             search: Search::derive("", &[]),
             selection: None,
@@ -2138,7 +2184,7 @@ mod tests {
         let old_scale = ready.page_scale(page);
         ready
             .surfaces
-            .insert(page, old_scale, fake_surface(page, old_scale));
+            .insert(page, old_scale, 0, fake_surface(page, old_scale));
         assert!(ready.visible_surface().is_some());
         // Nova escala sem render: o cache não tem a chave exata…
         ready.render_scale = 2.0;
@@ -2524,6 +2570,7 @@ mod tests {
             Message::Rendered {
                 page,
                 scale,
+                rotation: 0,
                 doc_gen,
                 render_gen,
                 surface: None,
@@ -2653,6 +2700,96 @@ mod tests {
     }
 
     #[test]
+    fn rotate_view_cycles_quarters_and_resets_on_open() {
+        let Some(ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        assert_eq!(ready.view_rotation, 0);
+        let mut session = Session::Ready(ready);
+        for expected in [1, 2, 3, 0] {
+            apply(&mut session, Message::RotateView);
+            let Session::Ready(r) = &session else {
+                panic!("expected Ready");
+            };
+            assert_eq!(r.view_rotation, expected);
+        }
+        // Abrir outro documento descarta a sessão (rotação volta a 0 por construção).
+        apply(&mut session, Message::RotateView);
+        let _ = session.begin_open(OpenSource::Path(sample_pdf()));
+        assert!(matches!(session, Session::Loading { .. }));
+    }
+
+    #[test]
+    fn fit_uses_rotated_media() {
+        let Some(mut ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        ready.viewport = Viewport {
+            width: 800.0,
+            height: 600.0,
+        };
+        ready.zoom = Zoom::Page;
+        let page = ready.visible;
+        let media = ready.media(page);
+        ready.view_rotation = 1;
+        let swapped = MediaBox {
+            width: media.height,
+            height: media.width,
+        };
+        assert_eq!(
+            ready.page_scale(page),
+            Zoom::Page.scale(ready.viewport, swapped)
+        );
+    }
+
+    #[test]
+    fn rotated_render_swaps_bitmap_dims() {
+        let Some(ready) = sample_ready() else {
+            panic!("fixture PDF required");
+        };
+        let page = PageNo::first();
+        let scale = Scale::from_factor(1.0);
+        let plain = ready.engine.render(page, scale, 0).expect("render");
+        let rotated = ready.engine.render(page, scale, 1).expect("rotated render");
+        assert_eq!(plain.bitmap.width, rotated.bitmap.height);
+        assert_eq!(plain.bitmap.height, rotated.bitmap.width);
+    }
+
+    #[test]
+    fn render_key_separates_rotations() {
+        let page = PageNo::first();
+        let scale = Scale::from_factor(1.0);
+        assert_ne!(render_key(page, scale, 0), render_key(page, scale, 1));
+        assert_eq!(render_key(page, scale, 5), render_key(page, scale, 1));
+    }
+
+    #[test]
+    fn keyboard_r_rotates_view_with_focus_guard() {
+        use iced::event::Status;
+        use iced::keyboard::Modifiers;
+        match keyboard_message(
+            Key::Character("r".into()),
+            Modifiers::default(),
+            Status::Ignored,
+        ) {
+            Some(Message::RotateView) => {}
+            other => panic!("expected r -> RotateView, got {other:?}"),
+        }
+        assert!(keyboard_message(
+            Key::Character("r".into()),
+            Modifiers::SHIFT,
+            Status::Ignored,
+        )
+        .is_none());
+        assert!(keyboard_message(
+            Key::Character("r".into()),
+            Modifiers::default(),
+            Status::Captured,
+        )
+        .is_none());
+    }
+
+    #[test]
     fn stale_render_gen_is_ignored() {
         let Some(ready) = sample_ready() else {
             panic!("fixture PDF required");
@@ -2665,6 +2802,7 @@ mod tests {
             Message::Rendered {
                 page,
                 scale,
+                rotation: 0,
                 doc_gen: 1,
                 render_gen: 0,
                 surface: Some(fake_surface(page, scale)),
@@ -2686,12 +2824,12 @@ mod tests {
         let new_scale = Scale::from_factor(2.0);
         ready
             .surfaces
-            .insert(page, old_scale, fake_surface(page, old_scale));
+            .insert(page, old_scale, 0, fake_surface(page, old_scale));
         assert!(ready.surface(page, old_scale).is_some());
         assert!(ready.visible_surface().is_some());
         ready
             .surfaces
-            .insert(page, new_scale, fake_surface(page, new_scale));
+            .insert(page, new_scale, 0, fake_surface(page, new_scale));
         assert!(ready.surface(page, new_scale).is_some());
         assert!(ready.surface(page, old_scale).is_none());
     }
@@ -2709,16 +2847,19 @@ mod tests {
         ready.surfaces.insert(
             PageNo::from_index(0),
             s0,
+            0,
             fake_surface(PageNo::from_index(0), s0),
         );
         ready.surfaces.insert(
             PageNo::from_index(1),
             s0,
+            0,
             fake_surface(PageNo::from_index(1), s0),
         );
         ready.surfaces.insert(
             PageNo::from_index(2),
             s0,
+            0,
             fake_surface(PageNo::from_index(2), s0),
         );
         ready.evict_unused();
@@ -2762,6 +2903,7 @@ mod tests {
             Message::Rendered {
                 page,
                 scale,
+                rotation: 0,
                 doc_gen: stale_doc,
                 render_gen,
                 surface: Some(fake_surface(page, scale)),
@@ -3333,6 +3475,7 @@ mod tests {
             Message::Rendered {
                 page,
                 scale: thumb_scale,
+                rotation: 0,
                 doc_gen,
                 render_gen,
                 surface: Some(fake_surface(page, thumb_scale)),
@@ -3366,6 +3509,7 @@ mod tests {
             Message::Rendered {
                 page: current,
                 scale: Scale::from_factor(9.0),
+                rotation: 0,
                 doc_gen,
                 render_gen,
                 surface: None,
@@ -3389,10 +3533,10 @@ mod tests {
         let scale = ready.page_scale(visible);
         ready
             .surfaces
-            .insert(visible, scale, fake_surface(visible, scale));
+            .insert(visible, scale, 0, fake_surface(visible, scale));
         let target = PageNo::from_index(0);
         let media = ready.loaded_media(target).expect("media");
-        let key = render_key(target, ready.thumb_scale_for(media));
+        let key = render_key(target, ready.thumb_scale_for(media), 0);
         // `open_dialog` já agendou o render da visível; simula a worker livre.
         ready.render_inflight.clear();
         let _ = ready.request_thumb_render();

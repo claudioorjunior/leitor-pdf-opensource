@@ -41,6 +41,8 @@ enum Request {
     Render {
         page: PageNo,
         scale: Scale,
+        /// Quartos de volta horários da vista (0..=3); impressão usa 0.
+        rotation: u8,
         reply: mpsc::Sender<Result<PageSurface, EngineError>>,
     },
 }
@@ -110,8 +112,13 @@ impl PageEngine for PdfiumEngine {
                         Request::PageData { page, reply } => {
                             let _ = reply.send(page_data_from_doc(&document, page));
                         }
-                        Request::Render { page, scale, reply } => {
-                            let _ = reply.send(render_from_doc(&document, page, scale));
+                        Request::Render {
+                            page,
+                            scale,
+                            rotation,
+                            reply,
+                        } => {
+                            let _ = reply.send(render_from_doc(&document, page, scale, rotation));
                         }
                     }
                 }
@@ -136,8 +143,13 @@ impl PageEngine for PdfiumEngine {
         self.page_data(page).map(|(media, _)| media)
     }
 
-    fn render(&self, page: PageNo, scale: Scale) -> Result<PageSurface, EngineError> {
-        self.call(|reply| Request::Render { page, scale, reply })
+    fn render(&self, page: PageNo, scale: Scale, rotation: u8) -> Result<PageSurface, EngineError> {
+        self.call(|reply| Request::Render {
+            page,
+            scale,
+            rotation,
+            reply,
+        })
     }
 
     fn text_layer(&self, page: PageNo) -> Result<TextLayer, EngineError> {
@@ -255,19 +267,25 @@ fn render_from_doc(
     document: &PdfDocument<'_>,
     page: PageNo,
     scale: Scale,
+    rotation: u8,
 ) -> Result<PageSurface, EngineError> {
     let pdf_page = document
         .pages()
         .get(page_index(page)?)
         .map_err(|e| EngineError(e.to_string()))?;
-    let target = render_target_px(
-        pdf_page.width().value,
-        pdf_page.height().value,
-        scale.factor(),
-    )?;
+    // Vista girada 90°/270° troca largura ↔ altura antes do alvo em px.
+    let swap = rotation & 1 == 1;
+    let (page_w, page_h) = if swap {
+        (pdf_page.height().value, pdf_page.width().value)
+    } else {
+        (pdf_page.width().value, pdf_page.height().value)
+    };
+    let target = render_target_px(page_w, page_h, scale.factor())?;
     // Tamanho fixo: o pdfium-render não divide por MediaBox (evita inf em
     // página subnormal mesmo se o helper falhar em silêncio).
-    let config = PdfRenderConfig::new().set_fixed_size(target.width, target.height);
+    let config = PdfRenderConfig::new()
+        .set_fixed_size(target.width, target.height)
+        .rotate(rotation_for(rotation), false);
     let bitmap = pdf_page
         .render_with_config(&config)
         .map_err(|e| EngineError(e.to_string()))?;
@@ -286,6 +304,16 @@ fn render_from_doc(
 
 fn page_index(page: PageNo) -> Result<u16, EngineError> {
     u16::try_from(page.index()).map_err(|_| EngineError("página fora do intervalo".into()))
+}
+
+/// Quartos de volta horários da vista → rotação do Pdfium (também horária).
+fn rotation_for(quarter_turns: u8) -> PdfPageRenderRotation {
+    match quarter_turns & 3 {
+        0 => PdfPageRenderRotation::None,
+        1 => PdfPageRenderRotation::Degrees90,
+        2 => PdfPageRenderRotation::Degrees180,
+        _ => PdfPageRenderRotation::Degrees270,
+    }
 }
 
 fn pdfium_library_candidates() -> Vec<PathBuf> {
@@ -358,6 +386,15 @@ mod tests {
     use super::*;
 
     fn assert_send_sync<T: Send + Sync>() {}
+
+    #[test]
+    fn rotation_for_maps_quarter_turns_clockwise() {
+        assert_eq!(rotation_for(0), PdfPageRenderRotation::None);
+        assert_eq!(rotation_for(1), PdfPageRenderRotation::Degrees90);
+        assert_eq!(rotation_for(2), PdfPageRenderRotation::Degrees180);
+        assert_eq!(rotation_for(3), PdfPageRenderRotation::Degrees270);
+        assert_eq!(rotation_for(5), PdfPageRenderRotation::Degrees90);
+    }
 
     #[test]
     fn engine_handle_is_send_sync_for_tasks() {

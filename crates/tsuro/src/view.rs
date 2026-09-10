@@ -367,6 +367,7 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         "Ajustar página inteira",
         Message::SetZoom(Zoom::Page),
     ));
+    items = items.push(menu_item(t, "Girar vista (90°)", Message::RotateView));
     items = items.push(print_menu_item(t));
     if ready.selection_plain_text().is_some() {
         items = items.push(menu_item(t, "Copiar seleção", Message::CopySelection));
