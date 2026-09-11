@@ -180,6 +180,22 @@ pub struct PageSurface {
     pub scale: Scale,
 }
 
+/// Item de sumário (outline) do documento.
+/// `page` é 0-based (`PageNo`); `children` forma a árvore recursiva.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineItem {
+    pub title: String,
+    pub page: PageNo,
+    pub children: Vec<OutlineItem>,
+}
+
+/// Árvore de sumário: raiz com lista de itens de nível superior.
+/// `None` significa que o PDF não possui outline.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Outline {
+    pub items: Vec<OutlineItem>,
+}
+
 pub trait PageEngine: Send + Sync {
     fn open(bytes: Arc<[u8]>) -> Result<Self, EngineError>
     where
