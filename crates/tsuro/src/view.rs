@@ -10,7 +10,8 @@ use crate::kiri::{self, Theme, Tokens};
 use crate::page::PageNo;
 use crate::print::{PrintOrientation, MAX_COPIES};
 use crate::session::{
-    Message, NavCmd, PrintDialog, RangeMode, Ready, Session, Zoom, ZoomFactor, THUMB_ROW,
+    Message, NavCmd, PrintDialog, RangeMode, Ready, Session, ViewMode, Zoom, ZoomFactor, DOC_GAP,
+    DOC_PAD_BOTTOM, DOC_PAD_TOP, DOC_PAD_X, PAGES_PANEL_W, SIG_PANEL_W, THUMB_ROW,
 };
 
 /// Altura do chrome Kiri: toolbar 36px + progresso 2px + respiro.
@@ -18,6 +19,10 @@ pub const CHROME_HEIGHT: f32 = 46.0;
 
 pub fn pages_scroll_id() -> scrollable::Id {
     scrollable::Id::new("tsuro-pages")
+}
+
+pub fn doc_scroll_id() -> scrollable::Id {
+    scrollable::Id::new("tsuro-doc")
 }
 
 pub fn chrome(session: &Session, theme: Theme) -> Element<'_, Message> {
@@ -375,6 +380,26 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     if ready.can_history_forward() {
         items = items.push(menu_item(t, "Avançar", Message::HistoryForward));
     }
+    items = items.push(text("Modo de página").size(12).color(t.muted));
+    let single = ready.view_mode == ViewMode::Single;
+    items = items.push(menu_item(
+        t,
+        if single {
+            "● Página única"
+        } else {
+            "○ Página única"
+        },
+        Message::SetViewMode(ViewMode::Single),
+    ));
+    items = items.push(menu_item(
+        t,
+        if single {
+            "○ Rolagem contínua"
+        } else {
+            "● Rolagem contínua"
+        },
+        Message::SetViewMode(ViewMode::Continuous),
+    ));
     if ready.selection_plain_text().is_some() {
         items = items.push(menu_item(t, "Copiar seleção", Message::CopySelection));
     }
@@ -890,12 +915,19 @@ fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     scrollable(col)
         .id(pages_scroll_id())
         .on_scroll(|viewport| Message::PagesScrolled(viewport.absolute_offset().y))
-        .width(Length::Fixed(156.0))
+        .width(Length::Fixed(PAGES_PANEL_W))
         .height(Length::Fill)
         .into()
 }
 
 fn page_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+    match ready.view_mode {
+        ViewMode::Single => single_pane(ready, t),
+        ViewMode::Continuous => continuous_pane(ready, t),
+    }
+}
+
+fn single_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     let page_view: Element<'_, Message> = match ready.visible_surface() {
         Some(surface) => image(surface.image.clone()).width(Length::Fill).into(),
         None if ready.visible_render_failed() => {
@@ -915,10 +947,10 @@ fn page_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         .width(Length::Fill)
         .center_x(Length::Fill)
         .padding(Padding {
-            top: 28.0,
-            right: 24.0,
-            bottom: 32.0,
-            left: 24.0,
+            top: DOC_PAD_TOP,
+            right: DOC_PAD_X,
+            bottom: DOC_PAD_BOTTOM,
+            left: DOC_PAD_X,
         })
         .style(move |_| container::Style {
             background: Some(Background::Color(t.surface)),
@@ -927,6 +959,69 @@ fn page_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     )
     .width(Length::Fill)
     .height(Length::Fill)
+    .into()
+}
+
+/// Rolagem contínua: coluna de células com a mesma estrutura da página única;
+/// fora da janela, placeholders de altura exata (sem montar bitmaps).
+fn continuous_pane(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+    let cw = ready.doc_content_width();
+    let total = ready.page_count();
+    let (start, end) = ready.doc_window();
+    let mut col = column![].spacing(DOC_GAP).width(Length::Fill);
+    if start > 0 {
+        // Offset acumulado menos um gap (o spacing da coluna já conta um).
+        let h = (ready.page_offset(PageNo::from_index(start)) - DOC_GAP).max(0.0);
+        col = col.push(Space::with_height(Length::Fixed(h)));
+    }
+    for i in start..end {
+        col = col.push(doc_cell(ready, PageNo::from_index(i), cw, t));
+    }
+    if end < total {
+        let h = (ready.doc_total_height() - ready.page_offset(PageNo::from_index(end)) - DOC_GAP)
+            .max(0.0);
+        col = col.push(Space::with_height(Length::Fixed(h)));
+    }
+    scrollable(col)
+        .id(doc_scroll_id())
+        .on_scroll(|viewport| Message::DocScrolled(viewport.absolute_offset().y))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn doc_cell(ready: &Ready, page: PageNo, cw: f32, t: Tokens) -> Element<'_, Message> {
+    let inner: Element<'_, Message> = match ready.page_surface(page) {
+        Some(surface) => image(surface.image.clone()).width(Length::Fill).into(),
+        None => {
+            let h = (ready.doc_cell_height(page, cw) - DOC_PAD_TOP - DOC_PAD_BOTTOM).max(1.0);
+            container(text("Renderizando página…").size(13).color(t.muted))
+                .width(Length::Fill)
+                .height(Length::Fixed(h))
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .into()
+        }
+    };
+    container(
+        container(inner)
+            .width(Length::Fill)
+            .center_x(Length::Fill)
+            .padding(0)
+            .style(kiri::page_frame(&t)),
+    )
+    .width(Length::Fill)
+    .center_x(Length::Fill)
+    .padding(Padding {
+        top: DOC_PAD_TOP,
+        right: DOC_PAD_X,
+        bottom: DOC_PAD_BOTTOM,
+        left: DOC_PAD_X,
+    })
+    .style(move |_| container::Style {
+        background: Some(Background::Color(t.surface)),
+        ..container::Style::default()
+    })
     .into()
 }
 
@@ -976,7 +1071,7 @@ fn signatures_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
         }
     }
     container(scrollable(col).height(Length::Fill))
-        .width(Length::Fixed(220.0))
+        .width(Length::Fixed(SIG_PANEL_W))
         .height(Length::Fill)
         .padding(Padding::from([4, 0]))
         .style(move |_| container::Style {

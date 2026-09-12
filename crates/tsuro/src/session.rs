@@ -38,6 +38,17 @@ const THUMB_PREFETCH: u32 = 3;
 /// The mandatory visible-page bitmap at its current scale is excluded.
 const NEIGHBOR_CACHE_BUDGET: usize = 64 * 1024 * 1024;
 
+/// Larguras do chrome (espelham `view.rs`); base da geometria do contínuo.
+pub(crate) const PAGES_PANEL_W: f32 = 156.0;
+pub(crate) const SIG_PANEL_W: f32 = 220.0;
+const PANES_GAP: f32 = 12.0;
+const CHROME_PAD: f32 = 8.0;
+/// Célula do contínuo replica o padding de `page_pane` (view.rs).
+pub(crate) const DOC_PAD_TOP: f32 = 28.0;
+pub(crate) const DOC_PAD_BOTTOM: f32 = 32.0;
+pub(crate) const DOC_PAD_X: f32 = 24.0;
+pub(crate) const DOC_GAP: f32 = 16.0;
+
 #[derive(Debug, Clone)]
 pub enum OpenSource {
     Path(PathBuf),
@@ -92,6 +103,14 @@ impl Zoom {
         };
         Scale::from_factor(factor)
     }
+}
+
+/// Modo de página (issue #26; Espelhadas fora do MVP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Single,
+    Continuous,
 }
 
 #[derive(Debug, Clone)]
@@ -303,6 +322,8 @@ pub struct Ready {
     /// Histórico voltar/avançar: `history[hpos] == visible` sempre.
     history: Vec<PageNo>,
     hpos: usize,
+    /// Página única ou rolagem contínua (⋯ → Modo de página); zera ao abrir.
+    pub view_mode: ViewMode,
     /// Vista girada em quartos de volta horários (0..=3, sessão; zera ao abrir).
     pub view_rotation: u8,
     /// Draft 1-based page number shown in the nav pill.
@@ -320,6 +341,8 @@ pub struct Ready {
     /// Linha de status pós-envio ("Enviado para …"); limpa ao reabrir o diálogo.
     pub print_status: Option<String>,
     pub pages_scroll_y: f32,
+    /// Offset Y do painel do documento (só contínuo); deriva `visible`.
+    pub doc_scroll_y: f32,
     recents: Vec<PathBuf>,
     /// DPR da janela: bitmap sai em px físicos (zoom CSS × isto).
     pub render_scale: f32,
@@ -681,6 +704,10 @@ pub enum Message {
     /// Histórico voltar/avançar (Alt+←/→; ⌘ no mac).
     HistoryBack,
     HistoryForward,
+    /// Rolagem do painel do documento (só contínuo); deriva `visible`.
+    DocScrolled(f32),
+    /// ⋯ → Modo de página: página única ou rolagem contínua.
+    SetViewMode(ViewMode),
     BrowseTo(Option<PathBuf>),
     ListingReady {
         path: Option<PathBuf>,
@@ -792,7 +819,7 @@ impl Session {
             }
             Message::Close => self.close_document(),
             Message::Nav(cmd) => {
-                if let Session::Ready(ready) = self {
+                let follow = if let Session::Ready(ready) = self {
                     if ready.print_dialog.is_some() {
                         // Com o modal aberto, as setas paginam o preview, não o documento.
                         let count = ready.page_count();
@@ -815,8 +842,11 @@ impl Session {
                     } else {
                         ready.apply_nav(cmd);
                     }
-                }
-                self.schedule_work()
+                    nav_follow(ready)
+                } else {
+                    Task::none()
+                };
+                Task::batch([self.schedule_work(), follow])
             }
             Message::PageInput(draft) => {
                 if let Session::Ready(ready) = self {
@@ -825,40 +855,55 @@ impl Session {
                 Task::none()
             }
             Message::PageSubmit => {
-                if let Session::Ready(ready) = self {
+                let follow = if let Session::Ready(ready) = self {
                     ready.submit_page_input();
-                }
-                self.schedule_work()
+                    nav_follow(ready)
+                } else {
+                    Task::none()
+                };
+                Task::batch([self.schedule_work(), follow])
             }
             Message::SetZoom(zoom) => {
-                if let Session::Ready(ready) = self {
+                let follow = if let Session::Ready(ready) = self {
                     ready.zoom = zoom;
                     ready.overflow_open = false;
                     ready.bump_render_gen();
-                }
-                self.schedule_work()
+                    nav_follow(ready)
+                } else {
+                    Task::none()
+                };
+                Task::batch([self.schedule_work(), follow])
             }
             Message::RotateView => {
-                if let Session::Ready(ready) = self {
+                let follow = if let Session::Ready(ready) = self {
                     ready.view_rotation = (ready.view_rotation + 1) & 3;
                     ready.overflow_open = false;
                     ready.bump_render_gen();
-                }
-                self.schedule_work()
+                    nav_follow(ready)
+                } else {
+                    Task::none()
+                };
+                Task::batch([self.schedule_work(), follow])
             }
             Message::SetViewport(viewport) => {
-                if let Session::Ready(ready) = self {
+                let follow = if let Session::Ready(ready) = self {
                     ready.viewport = viewport;
                     ready.bump_render_gen();
-                }
-                self.schedule_work()
+                    nav_follow(ready)
+                } else {
+                    Task::none()
+                };
+                Task::batch([self.schedule_work(), follow])
             }
             Message::WindowMetrics { width, height, id } => {
-                if let Session::Ready(ready) = self {
+                let follow = if let Session::Ready(ready) = self {
                     ready.viewport = Viewport { width, height };
                     ready.bump_render_gen();
-                }
-                Task::batch([self.schedule_work(), query_window_scale(id)])
+                    nav_follow(ready)
+                } else {
+                    Task::none()
+                };
+                Task::batch([self.schedule_work(), follow, query_window_scale(id)])
             }
             Message::WindowScale(scale) => {
                 if !scale.is_finite() || scale < 1.0 {
@@ -875,13 +920,16 @@ impl Session {
                 self.schedule_work()
             }
             Message::SearchChanged(query) => {
-                if let Session::Ready(ready) = self {
+                let follow = if let Session::Ready(ready) = self {
                     ready.set_query(query);
                     if let Some(hit) = ready.search.hits.first() {
                         ready.navigate_to(hit.page);
                     }
-                }
-                self.schedule_work()
+                    nav_follow(ready)
+                } else {
+                    Task::none()
+                };
+                Task::batch([self.schedule_work(), follow])
             }
             Message::PointerDown { page, page_pt } => {
                 if let Session::Ready(ready) = self {
@@ -1295,6 +1343,29 @@ impl Session {
                 }
                 self.schedule_work()
             }
+            Message::DocScrolled(y) => {
+                if let Session::Ready(ready) = self {
+                    ready.doc_scroll_y = y;
+                    if ready.view_mode == ViewMode::Continuous {
+                        let page = ready.page_at_offset(y);
+                        if page != ready.visible {
+                            ready.visible = page;
+                            ready.sync_page_input();
+                        }
+                    }
+                }
+                self.schedule_work()
+            }
+            Message::SetViewMode(mode) => {
+                let follow = if let Session::Ready(ready) = self {
+                    ready.view_mode = mode;
+                    ready.overflow_open = false;
+                    nav_follow(ready)
+                } else {
+                    Task::none()
+                };
+                Task::batch([self.schedule_work(), follow])
+            }
             Message::BrowseTo(path) => {
                 if let Session::Empty(empty) = self {
                     empty.cwd = path.clone();
@@ -1589,6 +1660,21 @@ fn render_task(
     )
 }
 
+/// Em rolagem contínua, toda troca/zoom/resize rola o painel até `visible`.
+/// Nos demais modos (e sem documento) é `Task::none`.
+fn nav_follow(ready: &Ready) -> Task<Message> {
+    if ready.view_mode != ViewMode::Continuous || ready.pages.total == 0 {
+        return Task::none();
+    }
+    scrollable::scroll_to(
+        crate::view::doc_scroll_id(),
+        scrollable::AbsoluteOffset {
+            x: 0.0,
+            y: ready.page_offset(ready.visible),
+        },
+    )
+}
+
 pub(crate) fn keyboard_message(
     key: Key,
     modifiers: keyboard::Modifiers,
@@ -1718,9 +1804,90 @@ impl Ready {
     }
 
     pub(crate) fn visible_surface(&self) -> Option<&CachedSurface> {
-        let scale = self.page_scale(self.visible);
-        self.surface(self.visible, scale)
-            .or_else(|| self.surfaces.fallback_for_page(self.visible))
+        self.page_surface(self.visible)
+    }
+
+    /// Bitmap da página na escala atual, com stale-while-revalidate.
+    pub(crate) fn page_surface(&self, page: PageNo) -> Option<&CachedSurface> {
+        let scale = self.page_scale(page);
+        self.surface(page, scale)
+            .or_else(|| self.surfaces.fallback_for_page(page))
+    }
+
+    /// Largura útil do documento: espelha `page_pane`/`ready_body` (view.rs).
+    pub(crate) fn doc_content_width(&self) -> f32 {
+        let mut w = self.viewport.width - CHROME_PAD;
+        if self.pages_open {
+            w -= PAGES_PANEL_W + PANES_GAP;
+        }
+        if self.signatures_open {
+            w -= SIG_PANEL_W + PANES_GAP;
+        }
+        (w - 2.0 * DOC_PAD_X).max(1.0)
+    }
+
+    /// Altura da célula (padding + folha proporcional à mídia girada).
+    pub(crate) fn doc_cell_height(&self, page: PageNo, content_width: f32) -> f32 {
+        let media = self.rotated_media(page);
+        DOC_PAD_TOP + content_width * media.height.max(1.0) / media.width.max(1.0) + DOC_PAD_BOTTOM
+    }
+
+    /// Offset Y do topo da página na coluna contínua.
+    pub(crate) fn page_offset(&self, page: PageNo) -> f32 {
+        let cw = self.doc_content_width();
+        let mut y = 0.0;
+        for i in 0..page.index().min(self.pages.total) {
+            y += self.doc_cell_height(PageNo::from_index(i), cw) + DOC_GAP;
+        }
+        y
+    }
+
+    /// Primeira página cujo intervalo contém `y` (clamp no fim).
+    pub(crate) fn page_at_offset(&self, y: f32) -> PageNo {
+        if self.pages.total == 0 {
+            return PageNo::first();
+        }
+        let cw = self.doc_content_width();
+        let mut top = 0.0;
+        for i in 0..self.pages.total {
+            top += self.doc_cell_height(PageNo::from_index(i), cw);
+            if y < top {
+                return PageNo::from_index(i);
+            }
+            top += DOC_GAP;
+        }
+        PageNo::from_index(self.pages.total - 1)
+    }
+
+    pub(crate) fn doc_total_height(&self) -> f32 {
+        if self.pages.total == 0 {
+            return 0.0;
+        }
+        let last = PageNo::from_index(self.pages.total - 1);
+        self.page_offset(last) + self.doc_cell_height(last, self.doc_content_width())
+    }
+
+    /// Janela com widget montado: visíveis na viewport estimada ± 2 páginas.
+    pub(crate) fn doc_window(&self) -> (u32, u32) {
+        if self.pages.total == 0 {
+            return (0, 0);
+        }
+        let pane_h = self.viewport.height.max(1.0);
+        let lo = (self.doc_scroll_y - pane_h).max(0.0);
+        let hi = self.doc_scroll_y + pane_h * 2.0;
+        let start = self.page_at_offset(lo).index().saturating_sub(2);
+        let end = (self.page_at_offset(hi).index() + 3).min(self.pages.total);
+        (start, end)
+    }
+
+    /// Páginas retidas no cache: janela do contínuo ou `visible ± 1`.
+    fn keep_pages(&self) -> HashSet<u32> {
+        if self.view_mode == ViewMode::Continuous {
+            let (start, end) = self.doc_window();
+            (start..end).collect()
+        } else {
+            neighbor_page_set(self.visible.index(), self.pages.total)
+        }
     }
 
     pub fn visible_render_failed(&self) -> bool {
@@ -1940,6 +2107,25 @@ impl Ready {
         if self.pages.total == 0 {
             return None;
         }
+        if self.view_mode == ViewMode::Continuous {
+            // Primeira da janela sem bitmap (visível primeiro, resto em ordem).
+            let (start, end) = self.doc_window();
+            let v = self.visible.index().min(end);
+            for i in (v..end).chain(start..v) {
+                let page = PageNo::from_index(i);
+                if !self.has_page_data(page) {
+                    continue;
+                }
+                let scale = self.page_scale(page);
+                let key = render_key(page, scale, self.view_rotation);
+                if self.surfaces.get(page, scale, self.view_rotation).is_none()
+                    && !self.failed.contains(&key)
+                {
+                    return Some((page, scale, self.view_rotation));
+                }
+            }
+            return None;
+        }
         let next_idx = self.visible.index() + 1;
         if next_idx >= self.pages.total {
             return None;
@@ -1952,7 +2138,7 @@ impl Ready {
     }
 
     fn evict_unused(&mut self) {
-        let keep = neighbor_page_set(self.visible.index(), self.pages.total);
+        let keep = self.keep_pages();
         self.surfaces.retain_pages(&keep);
         self.surfaces
             .enforce_neighbor_budget(self.visible.index(), NEIGHBOR_CACHE_BUDGET);
@@ -2108,6 +2294,7 @@ impl Document {
             visible: PageNo::first(),
             history: vec![PageNo::first()],
             hpos: 0,
+            view_mode: ViewMode::default(),
             view_rotation: 0,
             page_input: String::new(),
             search: Search::derive("", &[]),
@@ -2115,6 +2302,7 @@ impl Document {
             signatures_open: false,
             pages_open: false,
             pages_scroll_y: 0.0,
+            doc_scroll_y: 0.0,
             recents: Vec::new(),
             render_scale: 1.0,
             theme: Theme::Dark,
@@ -2188,6 +2376,7 @@ impl std::fmt::Debug for Ready {
             .field("source", &self.source)
             .field("zoom", &self.zoom)
             .field("visible", &self.visible)
+            .field("view_mode", &self.view_mode)
             .field("signatures_open", &self.signatures_open)
             .field("pages_open", &self.pages_open)
             .finish()
@@ -2530,6 +2719,127 @@ mod tests {
         );
         match &session {
             Session::Ready(ready) => assert_eq!(ready.visible.index(), 1),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Geometria determinística: mídias uniformes 100×200, sem painel.
+    fn uniform_ready() -> Option<Ready> {
+        let mut ready = sample_ready()?;
+        for media in ready.pages.media.iter_mut() {
+            *media = Some(MediaBox {
+                width: 100.0,
+                height: 200.0,
+            });
+        }
+        ready.viewport = Viewport {
+            width: 800.0,
+            height: 600.0,
+        };
+        ready.pages_open = false;
+        ready.signatures_open = false;
+        Some(ready)
+    }
+
+    /// Largura útil 744 (800 − 8 − 48); célula 1548 (28 + 744×2 + 32); passo 1564.
+    #[test]
+    fn continuous_offsets_match_cell_geometry() {
+        let Some(ready) = uniform_ready() else {
+            return;
+        };
+        assert_eq!(ready.doc_content_width(), 744.0);
+        let n = ready.page_count();
+        assert_eq!(ready.page_offset(PageNo::first()), 0.0);
+        if n > 1 {
+            assert_eq!(ready.page_offset(PageNo::from_index(1)), 1564.0);
+        }
+        let last = PageNo::from_index(n - 1);
+        assert_eq!(ready.doc_total_height(), ready.page_offset(last) + 1548.0);
+    }
+
+    #[test]
+    fn page_at_offset_resolves_borders_and_clamps() {
+        let Some(ready) = uniform_ready() else {
+            return;
+        };
+        let last = ready.page_count() - 1;
+        assert_eq!(ready.page_at_offset(0.0).index(), 0);
+        assert_eq!(ready.page_at_offset(1547.0).index(), 0);
+        // No gap entre células, a próxima página já responde.
+        let gap_page = if last > 0 { 1 } else { 0 };
+        assert_eq!(ready.page_at_offset(1548.0).index(), gap_page);
+        assert_eq!(ready.page_at_offset(-5.0).index(), 0);
+        assert_eq!(ready.page_at_offset(1e9).index(), last);
+    }
+
+    #[test]
+    fn view_mode_switch_preserves_visible_and_zoom() {
+        let Some(ready) = uniform_ready() else {
+            return;
+        };
+        assert_eq!(ready.view_mode, ViewMode::Single);
+        let target = 1.min(ready.page_count() - 1);
+        let mut session = Session::Ready(ready);
+        apply(
+            &mut session,
+            Message::Nav(NavCmd::GoTo(PageNo::from_index(target))),
+        );
+        apply(&mut session, Message::SetViewMode(ViewMode::Continuous));
+        match &session {
+            Session::Ready(ready) => {
+                assert_eq!(ready.view_mode, ViewMode::Continuous);
+                assert_eq!(ready.visible.index(), target);
+                assert!(matches!(ready.zoom, Zoom::Width));
+            }
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::SetViewMode(ViewMode::Single));
+        match &session {
+            Session::Ready(ready) => assert_eq!(ready.view_mode, ViewMode::Single),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn doc_scrolled_derives_visible_in_continuous() {
+        let Some(ready) = uniform_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(ready);
+        apply(&mut session, Message::SetViewMode(ViewMode::Continuous));
+        // Rolar não muda nada em página única; aqui deve derivar a página 2.
+        apply(&mut session, Message::DocScrolled(2.0 * 1564.0 + 10.0));
+        match &session {
+            Session::Ready(ready) => {
+                assert_eq!(ready.visible.index(), 2.min(ready.page_count() - 1));
+                assert_eq!(ready.page_input(), (ready.visible.index() + 1).to_string());
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn doc_window_contains_visible_and_clamps() {
+        let Some(ready) = uniform_ready() else {
+            return;
+        };
+        let mut session = Session::Ready(ready);
+        apply(&mut session, Message::SetViewMode(ViewMode::Continuous));
+        apply(&mut session, Message::DocScrolled(0.0));
+        match &session {
+            Session::Ready(ready) => {
+                let (start, end) = ready.doc_window();
+                let total = ready.page_count();
+                assert!(start <= ready.visible.index());
+                assert!(ready.visible.index() < end.max(1));
+                assert!(end <= total);
+                // Em contínuo o cache retém a janela; em única, visible ± 1.
+                let keep = ready.keep_pages();
+                for i in start..end {
+                    assert!(keep.contains(&i));
+                }
+                assert!(!keep.is_empty());
+            }
             _ => unreachable!(),
         }
     }
