@@ -369,6 +369,12 @@ fn overflow_menu(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     ));
     items = items.push(menu_item(t, "Girar vista (90°)", Message::RotateView));
     items = items.push(print_menu_item(t));
+    if ready.can_history_back() {
+        items = items.push(menu_item(t, "Voltar", Message::HistoryBack));
+    }
+    if ready.can_history_forward() {
+        items = items.push(menu_item(t, "Avançar", Message::HistoryForward));
+    }
     if ready.selection_plain_text().is_some() {
         items = items.push(menu_item(t, "Copiar seleção", Message::CopySelection));
     }
