@@ -21,7 +21,9 @@ TsuroPDF is a native viewer written in Rust ([iced](https://iced.rs/) + [Pdfium]
 ## Features
 
 - **Open** from the toolbar, by drag and drop, or from the empty-state browser (folders and recent files)
-- **Pages** — thumbnail panel, previous/next, page N / total counter, go-to-page with keyboard navigation
+- **Pages** — thumbnail panel with document outline tab, previous/next, page N / total counter, go-to-page with keyboard navigation
+- **View modes** — single page or continuous scroll
+- **Resume reading** — reopens each file where you left off (page + zoom); back/forward history
 - **Zoom** — fit to width, fit to page, `+` / `-`
 - **Search** the extracted text, with match count
 - **Signatures** — on-demand panel with signer and cryptographic status
@@ -39,7 +41,7 @@ The short way, with [Bun](https://bun.sh/):
 bun run install:tsuro -- --install
 ```
 
-It queries the latest [GitHub Release](https://github.com/claudioorjunior/tsuro-pdf/releases), downloads the artifact for your OS, and verifies the SHA-256. Without `--install` it only downloads. `--check` reports whether a newer version exists; `--version v0.1.1` pins a tag. If there is no release for your OS yet, the script prints the clone path and exits with code 1.
+It queries the latest [GitHub Release](https://github.com/claudioorjunior/tsuro-pdf/releases), downloads the artifact for your OS, and verifies the SHA-256. Without `--install` it only downloads. `--check` reports whether a newer version exists; `--version v0.2.0` pins a tag. If there is no release for your OS yet, the script prints the clone path and exits with code 1.
 
 Or grab the file from the release page:
 
@@ -118,7 +120,7 @@ npm run tauri dev
 
 ## Contributing
 
-Read, verify, and packaging contributions are welcome. TsuroPDF intends to stay small: every proposal is judged against the mission gate (faster, lighter, or clearer reading, marking, or printing). Issues, PRs, and commits in PT-BR; keep PRs small and one-topic.
+Read, verify, and packaging contributions are welcome. TsuroPDF intends to stay small: every proposal is judged against the mission gate (faster, lighter, or clearer reading, marking, or printing). Issues, PRs, and commits in English or PT-BR; keep PRs small and one-topic. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 ## License
 

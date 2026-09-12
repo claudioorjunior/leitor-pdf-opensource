@@ -21,7 +21,9 @@ TsuroPDF é um visor nativo escrito em Rust ([iced](https://iced.rs/) + [Pdfium]
 ## Recursos
 
 - **Abrir** pela barra de ferramentas, arrastando o arquivo, ou pelo navegador vazio (pastas e arquivos recentes)
-- **Páginas** — painel de miniaturas, anterior/próxima, contador Página N / total, ir para página com navegação por teclado
+- **Páginas** — painel de miniaturas com aba de sumário, anterior/próxima, contador Página N / total, ir para página com navegação por teclado
+- **Modos de vista** — página única ou rolagem contínua
+- **Retomar leitura** — reabre cada arquivo de onde você parou (página + zoom); histórico voltar/avançar
 - **Zoom** — ajustar à largura, encaixar a página, `+` / `-`
 - **Buscar** no texto extraído, com a conta de ocorrências
 - **Assinaturas** — painel sob demanda, com o signatário e o estado criptográfico
@@ -39,7 +41,7 @@ A forma curta, com [Bun](https://bun.sh/):
 bun run install:tsuro -- --install
 ```
 
-Consulta a última [GitHub Release](https://github.com/claudioorjunior/tsuro-pdf/releases), baixa o artefato do seu sistema e confere o SHA-256. Sem `--install` só baixa. `--check` diz se há versão nova; `--version v0.1.1` pina uma tag. Se ainda não houver release para o seu sistema, o script imprime o caminho de clone e sai com código 1.
+Consulta a última [GitHub Release](https://github.com/claudioorjunior/tsuro-pdf/releases), baixa o artefato do seu sistema e confere o SHA-256. Sem `--install` só baixa. `--check` diz se há versão nova; `--version v0.2.0` pina uma tag. Se ainda não houver release para o seu sistema, o script imprime o caminho de clone e sai com código 1.
 
 Ou baixe o arquivo da release:
 
@@ -118,7 +120,7 @@ npm run tauri dev
 
 ## Contribuir
 
-Contribuições de leitura, verificação e empacotamento são bem-vindas. TsuroPDF pretende continuar pequeno: toda proposta passa pela missão (ler, marcar ou imprimir mais rápido, mais leve ou mais claro). Issues, PRs e commits em PT-BR; PRs pequenos, um assunto por vez.
+Contribuições de leitura, verificação e empacotamento são bem-vindas. TsuroPDF pretende continuar pequeno: toda proposta passa pela missão (ler, marcar ou imprimir mais rápido, mais leve ou mais claro). Issues, PRs e commits em inglês ou PT-BR; PRs pequenos, um assunto por vez. Veja o [guia de contribuição](CONTRIBUTING.pt-BR.md).
 
 ## Licença
 
