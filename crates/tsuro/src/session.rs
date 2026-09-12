@@ -19,6 +19,9 @@ use crate::kiri::Theme;
 use crate::page::{
     EngineError, Glyph, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer, Viewport,
 };
+use crate::positions::{
+    file_identity, find_position, read_positions, record_position, save_positions, DocPosition,
+};
 use crate::prefs::{read_theme, save_theme};
 use crate::print::{
     print_selection_pdf, write_and_open_print_pdf, PrintOrientation, PrintRange, PrintSelection,
@@ -297,6 +300,9 @@ pub struct Ready {
     pub signatures: PdfAnalysis,
     pub zoom: Zoom,
     pub visible: PageNo,
+    /// Histórico voltar/avançar: `history[hpos] == visible` sempre.
+    history: Vec<PageNo>,
+    hpos: usize,
     /// Vista girada em quartos de volta horários (0..=3, sessão; zera ao abrir).
     pub view_rotation: u8,
     /// Draft 1-based page number shown in the nav pill.
@@ -672,6 +678,9 @@ pub enum Message {
     /// Densidade da janela (device pixels por px CSS). 1.0 = sem Retina.
     WindowScale(f32),
     PagesScrolled(f32),
+    /// Histórico voltar/avançar (Alt+←/→; ⌘ no mac).
+    HistoryBack,
+    HistoryForward,
     BrowseTo(Option<PathBuf>),
     ListingReady {
         path: Option<PathBuf>,
@@ -1274,6 +1283,18 @@ impl Session {
                 }
                 self.schedule_work()
             }
+            Message::HistoryBack => {
+                if let Session::Ready(ready) = self {
+                    ready.history_go(false);
+                }
+                self.schedule_work()
+            }
+            Message::HistoryForward => {
+                if let Session::Ready(ready) = self {
+                    ready.history_go(true);
+                }
+                self.schedule_work()
+            }
             Message::BrowseTo(path) => {
                 if let Session::Empty(empty) = self {
                     empty.cwd = path.clone();
@@ -1384,6 +1405,7 @@ impl Session {
                 ready.pages_open = false;
                 ready.pages_scroll_y = 0.0;
                 ready.overflow_open = false;
+                ready.restore_position();
                 ready.sync_page_input();
                 ready.render_gen = 1;
                 *self = Session::Ready(ready);
@@ -1575,6 +1597,20 @@ pub(crate) fn keyboard_message(
     if status != event::Status::Ignored {
         return None;
     }
+    // Alt+←/→ (⌘ no mac): histórico voltar/avançar.
+    #[cfg(target_os = "macos")]
+    let hist_mod =
+        modifiers.logo() && !modifiers.alt() && !modifiers.control() && !modifiers.shift();
+    #[cfg(not(target_os = "macos"))]
+    let hist_mod =
+        modifiers.alt() && !modifiers.logo() && !modifiers.control() && !modifiers.shift();
+    if hist_mod {
+        return match key.as_ref() {
+            Key::Named(Named::ArrowLeft) => Some(Message::HistoryBack),
+            Key::Named(Named::ArrowRight) => Some(Message::HistoryForward),
+            _ => None,
+        };
+    }
     if modifiers.shift() || modifiers.control() || modifiers.alt() || modifiers.logo() {
         return None;
     }
@@ -1743,18 +1779,84 @@ impl Ready {
     }
 
     fn navigate_to(&mut self, page: PageNo) {
+        if self.go_to(page) {
+            // Empilha a nova posição, descartando o "futuro" (como navegador).
+            self.history.truncate(self.hpos + 1);
+            self.history.push(self.visible);
+            self.hpos = self.history.len() - 1;
+            self.save_position();
+        }
+    }
+
+    /// Núcleo sem registro: clamp + troca + geração. `true` se mudou de página.
+    fn go_to(&mut self, page: PageNo) -> bool {
         if self.pages.total == 0 {
             self.sync_page_input();
-            return;
+            return false;
         }
         let max = self.pages.total - 1;
         let idx = page.index().min(max);
         let target = PageNo::from_index(idx);
-        if target != self.visible {
-            self.visible = target;
-            self.bump_render_gen();
+        if target == self.visible {
+            self.sync_page_input();
+            return false;
         }
+        self.visible = target;
+        self.bump_render_gen();
         self.sync_page_input();
+        true
+    }
+
+    /// Um passo no histórico (`forward` = avançar). Limites são no-op.
+    fn history_go(&mut self, forward: bool) {
+        let next = if forward {
+            self.hpos.checked_add(1)
+        } else {
+            self.hpos.checked_sub(1)
+        };
+        let Some(i) = next.filter(|i| *i < self.history.len()) else {
+            return;
+        };
+        self.hpos = i;
+        self.go_to(self.history[i]);
+        self.save_position();
+    }
+
+    pub fn can_history_back(&self) -> bool {
+        self.hpos > 0
+    }
+
+    pub fn can_history_forward(&self) -> bool {
+        self.hpos + 1 < self.history.len()
+    }
+
+    /// Persiste página+zoom atuais; silencioso em erro ou arquivo ilegível.
+    fn save_position(&self) {
+        let path = self.source.path();
+        let Some((size, mtime)) = file_identity(path) else {
+            return;
+        };
+        let pos = DocPosition {
+            page: self.visible.index(),
+            zoom: self.zoom,
+            size,
+            mtime,
+        };
+        let entries = record_position(read_positions(), path.to_path_buf(), pos);
+        let _ = save_positions(&entries);
+    }
+
+    /// Restaura página+zoom do arquivo (identidade precisa); zera o histórico.
+    fn restore_position(&mut self) {
+        let path = self.source.path().to_path_buf();
+        let Some(pos) = find_position(&read_positions(), &path) else {
+            return;
+        };
+        self.zoom = pos.zoom;
+        let idx = pos.page.min(self.pages.total.saturating_sub(1));
+        self.visible = PageNo::from_index(idx);
+        self.history = vec![self.visible];
+        self.hpos = 0;
     }
 
     fn apply_nav(&mut self, cmd: NavCmd) {
@@ -2004,6 +2106,8 @@ impl Document {
             signatures,
             zoom: Zoom::Width,
             visible: PageNo::first(),
+            history: vec![PageNo::first()],
+            hpos: 0,
             view_rotation: 0,
             page_input: String::new(),
             search: Search::derive("", &[]),
@@ -2428,6 +2532,143 @@ mod tests {
             Session::Ready(ready) => assert_eq!(ready.visible.index(), 1),
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn history_back_forward_and_truncation() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        if ready.page_count() < 2 {
+            return;
+        }
+        let last = ready.page_count().saturating_sub(1);
+        let first = PageNo::first();
+        let last_page = PageNo::from_index(last);
+        let mut session = Session::Ready(ready);
+        let visible = |s: &Session| match s {
+            Session::Ready(r) => r.visible,
+            _ => unreachable!(),
+        };
+        let hist_len = |s: &Session| match s {
+            Session::Ready(r) => (r.history.len(), r.hpos),
+            _ => unreachable!(),
+        };
+        assert_eq!(hist_len(&session), (1, 0));
+        apply(&mut session, Message::Nav(NavCmd::GoTo(last_page)));
+        assert_eq!(visible(&session), last_page);
+        assert_eq!(hist_len(&session), (2, 1));
+        apply(&mut session, Message::Nav(NavCmd::GoTo(first)));
+        assert_eq!(hist_len(&session), (3, 2));
+        // Mesma página não duplica.
+        apply(&mut session, Message::Nav(NavCmd::GoTo(first)));
+        assert_eq!(hist_len(&session), (3, 2));
+        apply(&mut session, Message::HistoryBack);
+        assert_eq!(visible(&session), last_page);
+        // Navegar descarta o "futuro".
+        apply(&mut session, Message::Nav(NavCmd::GoTo(first)));
+        assert_eq!(hist_len(&session), (3, 2));
+        apply(&mut session, Message::HistoryBack);
+        apply(&mut session, Message::HistoryBack);
+        assert_eq!(visible(&session), first);
+        assert_eq!(hist_len(&session), (3, 0));
+        // Limite é no-op.
+        apply(&mut session, Message::HistoryBack);
+        assert_eq!(visible(&session), first);
+        apply(&mut session, Message::HistoryForward);
+        assert_eq!(visible(&session), last_page);
+        apply(&mut session, Message::HistoryForward);
+        assert_eq!(visible(&session), first);
+        apply(&mut session, Message::HistoryForward);
+        assert_eq!(visible(&session), first);
+        match &session {
+            Session::Ready(r) => {
+                assert!(!r.can_history_back() || r.hpos > 0);
+                assert_eq!(r.can_history_forward(), r.hpos + 1 < r.history.len());
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn history_shortcut_uses_history_messages() {
+        use iced::event::Status;
+        use iced::keyboard::Modifiers;
+        // Alt+←/→ (⌘ no mac); outros modificadores continuam ignorados.
+        #[cfg(target_os = "macos")]
+        let hist = Modifiers::LOGO;
+        #[cfg(not(target_os = "macos"))]
+        let hist = Modifiers::ALT;
+        assert!(matches!(
+            keyboard_message(Key::Named(Named::ArrowLeft), hist, Status::Ignored),
+            Some(Message::HistoryBack)
+        ));
+        assert!(matches!(
+            keyboard_message(Key::Named(Named::ArrowRight), hist, Status::Ignored),
+            Some(Message::HistoryForward)
+        ));
+        assert!(keyboard_message(
+            Key::Named(Named::ArrowLeft),
+            Modifiers::SHIFT,
+            Status::Ignored
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn navigate_persists_position_for_real_file() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let file =
+            std::env::temp_dir().join(format!("tsuro-positions-unit-{}-nav", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        crate::positions::with_positions_path(file.clone(), || {
+            let last = ready.page_count().saturating_sub(1);
+            let mut session = Session::Ready(ready);
+            apply(
+                &mut session,
+                Message::Nav(NavCmd::GoTo(PageNo::from_index(last))),
+            );
+            let back = crate::positions::read_positions();
+            assert_eq!(back.len(), 1);
+            assert_eq!(back[0].1.page, last);
+        });
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn restore_position_applies_stored_page_and_resets_history() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        let file = std::env::temp_dir().join(format!(
+            "tsuro-positions-unit-{}-restore",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&file);
+        crate::positions::with_positions_path(file.clone(), || {
+            let path = ready.source.path().to_path_buf();
+            let (size, mtime) = crate::positions::file_identity(&path).unwrap();
+            let last = ready.page_count().saturating_sub(1);
+            let entries = crate::positions::record_position(
+                Vec::new(),
+                path,
+                crate::positions::DocPosition {
+                    page: last,
+                    zoom: Zoom::Page,
+                    size,
+                    mtime,
+                },
+            );
+            crate::positions::save_positions(&entries).unwrap();
+            ready.restore_position();
+            assert_eq!(ready.visible.index(), last);
+            assert!(matches!(ready.zoom, Zoom::Page));
+            assert_eq!(ready.history, vec![ready.visible]);
+            assert_eq!(ready.hpos, 0);
+        });
+        let _ = std::fs::remove_file(&file);
     }
 
     #[test]
