@@ -81,6 +81,20 @@ jobs:
           - **Rolagem contínua**: alterna entre página única e rolagem contínua do documento inteiro.
           - **Sumário**: PDFs com sumário ganham a aba Sumário no painel lateral — árvore clicável com expandir/colapsar e salto para a seção.
           - **Botão início + ícone novo**: volta para a tela inicial com ícone Ori em origami; ícone novo do app (tsuru sobre fundo Kiri).
+          EOF
+          # PRs mergeadas com @autores (visibilidade open-source; rodapé Full
+          # Changelog próprio do template, então filtra o gerado). Falha aqui
+          # não bloqueia a release: registra o aviso nas notas.
+          {
+            PREV="$(gh release list --json tagName --jq "[.[].tagName | select(. != env.GITHUB_REF_NAME)] | .[0] // empty")"
+            ARGS=(-f "tag_name=$GITHUB_REF_NAME")
+            [ -n "$PREV" ] && ARGS+=(-f "previous_tag_name=$PREV")
+            echo ""
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${ARGS[@]}" --jq .body \
+              | grep -v '^\*\*Full Changelog\*\*' \
+              || echo "_Lista de PRs indisponível._"
+          } >>"$NOTES"
+          cat >>"$NOTES" <<EOF
 
           **Full Changelog**: https://github.com/claudioorjunior/tsuro-pdf/compare/v0.1.1...${GITHUB_REF_NAME}
 
