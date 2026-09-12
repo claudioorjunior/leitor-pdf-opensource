@@ -1,118 +1,125 @@
-# TsuroPDF
+<p align="right">🇧🇷 <a href="README.pt-BR.md">Português</a></p>
 
-Leitor de PDF de código aberto. Abre o arquivo, mostra a página, busca o texto e verifica assinaturas digitais.
+<p align="center">
+  <img src="docs/hero.png" alt="TsuroPDF hero — origami crane over misty mountains" width="100%">
+</p>
 
-Não é uma suíte. Completo, neste produto, é **ler sem travar**.
+<h1 align="center">TsuroPDF</h1>
 
-![TsuroPDF](public/tsuro-horizontal.png)
+<p align="center">
+  <a href="https://github.com/claudioorjunior/tsuro-pdf/releases"><img src="https://img.shields.io/github/v/release/claudioorjunior/tsuro-pdf?sort=semver&display_name=release" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/claudioorjunior/tsuro-pdf" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/macOS-Apple_Silicon-000?logo=apple&logoColor=white" alt="macOS Apple Silicon">
+  <img src="https://img.shields.io/badge/Windows-x64-0078D4?logo=windows&logoColor=white" alt="Windows x64">
+  <img src="https://img.shields.io/badge/built_with-Rust-CE422B?logo=rust&logoColor=white" alt="Built with Rust">
+</p>
 
-A marca é um tsuru de três dobras.
+<p align="center"><strong>A fast, lightweight, open-source PDF reader for the desktop. Read, mark, print. Nothing else.</strong></p>
 
-## O que é
+TsuroPDF is a native viewer written in Rust ([iced](https://iced.rs/) + [Pdfium](https://pdfium.googlesource.com/pdfium/)). It targets any PDF: large files, demanding typography, digitally signed documents. If a feature does not make reading, marking, or printing faster, lighter, or clearer, it does not belong here. No forms, no cloud, no collaboration, no suite.
 
-TsuroPDF é um leitor nativo para o desktop, escrito em Rust ([iced](https://iced.rs/) + [Pdfium](https://pdfium.googlesource.com/pdfium/)). O alvo é qualquer PDF: grande, com tipografia exigente ou com assinatura digital.
+## Features
 
-O que ele faz cabe na barra:
+- **Open** from the toolbar, by drag and drop, or from the empty-state browser (folders and recent files)
+- **Pages** — thumbnail panel, previous/next, page N / total counter, go-to-page with keyboard navigation
+- **Zoom** — fit to width, fit to page, `+` / `-`
+- **Search** the extracted text, with match count
+- **Signatures** — on-demand panel with signer and cryptographic status
+- **Copy** selected text, when there is a selection
+- **Print** — built-in dialog with direct spool (renders a 200 DPI print PDF, no native dialog)
+- **View rotation** — 90° per session, plus dark/light theme
 
-- **Abrir** pelo ícone da pasta, arrastando o arquivo, ou pelo navegador vazio (pastas e últimos arquivos)
-- **Páginas** — painel de miniaturas, além de anterior, próxima e o contador Página N / total
-- **Zoom** — ajustar à largura, encaixar a página, `+` / `−`
-- **Buscar** no texto extraído, com a conta de ocorrências
-- **Assinaturas** — painel sob demanda, com o signatário e o estado criptográfico
-- **Copiar** o texto selecionado, quando há seleção
+Annotations and highlights are part of the mission but not in the viewer yet. What stays out, on purpose, is everything else.
 
-Anotações, marcações e impressão fazem parte da missão; anotações e marcações ainda não estão no visor, e impressão chega como PDF de impressão (200 DPI) sem diálogo nativo. O que fica de fora — e deve continuar de fora — é o resto da suíte: formulários, nuvem, colaboração, qualquer função que não sirva para ler, marcar ou imprimir.
+## Install
 
-## Instalar
-
-A forma curta, com [Bun](https://bun.sh/):
+The short way, with [Bun](https://bun.sh/):
 
 ```bash
 bun run install:tsuro -- --install
 ```
 
-Consulta a última [GitHub Release](https://github.com/claudioorjunior/tsuro-pdf/releases), baixa o artefato do seu sistema e confere o SHA-256. Sem `--install` só baixa. `--check` diz se há versão nova; `--version v0.1.0` pina uma tag.
+It queries the latest [GitHub Release](https://github.com/claudioorjunior/tsuro-pdf/releases), downloads the artifact for your OS, and verifies the SHA-256. Without `--install` it only downloads. `--check` reports whether a newer version exists; `--version v0.1.1` pins a tag. If there is no release for your OS yet, the script prints the clone path and exits with code 1.
 
-Ou baixe o arquivo da release:
+Or grab the file from the release page:
 
-- **Mac Apple Silicon** — `TsuroPDF-{versão}-aarch64-apple-darwin.dmg`. Abra o DMG e arraste TsuroPDF para Applications.
-- **Windows x64** — `TsuroPDF-{versão}-x86_64-pc-windows-msvc-setup.exe`. Instala em `%LOCALAPPDATA%\Programs\TsuroPDF`, sem admin. `/S` é a instalação silenciosa.
+- **Mac Apple Silicon** — `TsuroPDF-{version}-aarch64-apple-darwin.dmg`. Open the DMG and drag TsuroPDF to Applications.
+- **Windows x64** — `TsuroPDF-{version}-x86_64-pc-windows-msvc-setup.exe`. Installs to `%LOCALAPPDATA%\Programs\TsuroPDF`, no admin needed. `/S` is the silent install.
 
-Ainda não há build para Mac Intel nem Linux.
+No builds for Intel Macs or Linux yet.
 
-**Primeira abertura no Mac.** A assinatura é ad-hoc (sem Apple Developer Program). O Gatekeeper avisa: clique com o botão direito em TsuroPDF → Abrir.
+**First launch on macOS.** Signing is ad-hoc (no Apple Developer Program). Gatekeeper will warn: right-click TsuroPDF → Open.
 
-**Primeira abertura no Windows.** Se o SmartScreen aparecer: Mais informações → Executar assim mesmo.
+**First launch on Windows.** If SmartScreen appears: More info → Run anyway.
 
-Se ainda não houver release para o seu sistema, o script imprime o caminho de clone e sai com código 1.
-
-### Compilar no Mac
+## Build from source
 
 ```bash
 git clone https://github.com/claudioorjunior/tsuro-pdf.git
 cd tsuro-pdf
-./scripts/bundle-macos.sh
+./scripts/bundle-macos.sh        # macOS .app in dist/
 ```
 
-Arraste `dist/TsuroPDF.app` para `/Applications` e abra pelo ícone. O script baixa o Pdfium, compila o visor nativo e monta o `.app`.
+```powershell
+powershell -File scripts/bundle-windows.ps1   # Windows NSIS installer
+```
 
-## Requisitos para desenvolver
+Developing the viewer needs stable [Rust](https://rustup.rs/) (`rustup default stable`) plus the [Pdfium](https://github.com/bblanchon/pdfium-binaries) library in the project dir or on the system — `bundle-macos.sh` handles that on macOS. Node.js is only needed for the legacy viewer (Tauri + PDF.js), which is not the product.
 
-- [Rust](https://rustup.rs/) estável (`rustup default stable`)
-- Biblioteca [Pdfium](https://github.com/bblanchon/pdfium-binaries) no diretório do projeto ou no sistema — o `bundle-macos.sh` resolve isso no Mac
-
-Node.js só entra se você for mexer no visor legado (Tauri + PDF.js), que não é o produto.
-
-## Rodar a partir do código
+Run from code:
 
 ```bash
 cargo test -p tsuro-sign
 cargo run -p tsuro -- public/samples/guia-folio.pdf
 ```
 
-Sem argumento, a janela abre vazia. Controles ficam na barra, não em atalhos.
+With no argument the window opens empty. Controls live in the toolbar, not in shortcuts.
 
-## Exemplos
+## Samples
 
-Há dois PDFs em `public/samples/`:
+Two PDFs in `public/samples/`:
 
-| Arquivo | O que testa |
+| File | What it exercises |
 | --- | --- |
-| `guia-folio.pdf` | Tipografia, tabela, acentos, busca |
-| `contrato-assinado.pdf` | Campo `/Sig` com certificado autoassinado de demonstração |
+| `guia-folio.pdf` | Typography, tables, accents, search |
+| `contrato-assinado.pdf` | `/Sig` field with a demo self-signed certificate |
 
-O certificado do contrato é **autoassinado**. TsuroPDF trata isso como assinatura criptograficamente íntegra, mas sem cadeia de confiança pública. O estado esperado é “íntegra (sem confiança pública)”.
+The contract certificate is **self-signed**. TsuroPDF treats it as cryptographically intact but with no public trust chain. The expected state is "intact (no public trust)".
 
-## Assinaturas digitais
+## Digital signatures
 
-O reconhecimento e a verificação vivem no crate Rust `tsuro-sign`:
+Detection and verification live in the Rust crate `tsuro-sign`:
 
-- percorre AcroForm e dicionários `/Sig`
-- lê o PKCS#7/CMS (perfil `adbe.pkcs7.detached`)
-- confere o `ByteRange` e o `messageDigest`
-- verifica RSA + SHA-256 sobre os atributos assinados
+- walks AcroForm and `/Sig` dictionaries
+- reads PKCS#7/CMS (`adbe.pkcs7.detached` profile)
+- checks `ByteRange` and `messageDigest`
+- verifies RSA + SHA-256 over the signed attributes
 
-Estados que o painel pode mostrar: válida, íntegra (sem confiança pública), documento alterado, inválida, não suportada, certificado expirado ou ainda não válido.
+Panel states: valid, intact (no public trust), document modified, invalid, unsupported, certificate expired or not yet valid.
 
-## Estrutura
+## Project structure
 
 ```
-crates/tsuro            visor nativo (iced + Pdfium) — o produto
-crates/tsuro-sign       motor de assinaturas (PDF + CMS)
-public/samples          PDFs de exemplo
-public/tsuro-horizontal.png marca
-src-tauri, src          visor legado (Tauri + React + PDF.js)
+crates/tsuro            native viewer (iced + Pdfium) — the product
+crates/tsuro-sign       signature engine (PDF + CMS)
+public/samples          sample PDFs
+docs/hero.png           README hero
+src-tauri, src          legacy viewer (Tauri + React + PDF.js)
 ```
 
-O legado continua no repositório para consulta. Não é o que se empacota como TsuroPDF.
+The legacy tree stays in the repo for reference. It is not what ships as TsuroPDF.
 
 ```bash
 npm install
 npm run test:sign
-npm run dev          # visor legado no navegador (http://127.0.0.1:43177)
+npm run dev          # legacy browser viewer (http://127.0.0.1:43177)
 npm run tauri dev
 ```
 
-## Licença
+## Contributing
 
-[MIT](LICENSE). Contribuições de leitura, verificação e empacotamento são bem-vindas. TsuroPDF pretende continuar pequeno.
+Read, verify, and packaging contributions are welcome. TsuroPDF intends to stay small: every proposal is judged against the mission gate (faster, lighter, or clearer reading, marking, or printing). Issues, PRs, and commits in PT-BR; keep PRs small and one-topic.
+
+## License
+
+[MIT](LICENSE). Copyright (c) 2026 Tsuro contributors.
