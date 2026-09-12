@@ -17,7 +17,8 @@ use crate::browse::{
 use crate::engine::PdfiumEngine;
 use crate::kiri::Theme;
 use crate::page::{
-    EngineError, Glyph, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer, Viewport,
+    EngineError, Glyph, MediaBox, Outline, OutlineItem, PageEngine, PageNo, PageSurface, Quad,
+    Scale, TextLayer, Viewport,
 };
 use crate::positions::{
     file_identity, find_position, read_positions, record_position, save_positions, DocPosition,
@@ -332,6 +333,13 @@ pub struct Ready {
     pub selection: Option<Selection>,
     pub signatures_open: bool,
     pub pages_open: bool,
+    /// Aba Sumário ativa no painel de Páginas (só existe se houver outline).
+    pub outline_open: bool,
+    pub outline: Option<Outline>,
+    /// Caminhos colapsados na árvore (`[0, 2]` = 3º filho do 1º item).
+    pub outline_collapsed: HashSet<Vec<usize>>,
+    /// Evita disparar mais de um task de carregamento de outline por documento.
+    outline_load_issued: bool,
     /// Tema Kiri — sobrevive a `begin_open`/`finish_open`/`close_document`.
     pub theme: Theme,
     /// Menu ⋯ aberto. Só existe em `Ready`; zera ao trocar de documento.
@@ -662,6 +670,15 @@ pub enum Message {
     ToggleSignatures,
     TogglePages,
     ToggleOverflow,
+    /// Aba Sumário no painel de Páginas (`true` = sumário, `false` = miniaturas).
+    OutlineTab(bool),
+    /// Expande/colapsa um nó da árvore (caminho de índices desde a raiz).
+    OutlineFold(Vec<usize>),
+    /// Resultado do carregamento preguiçoso do sumário (outline) após abrir
+    /// o documento. `None` indica que o PDF não possui outline.
+    OutlineLoaded(Option<Outline>),
+    /// Clique em um item do sumário: navega (com clamp) para a página do item.
+    OutlineJump(PageNo),
     /// ⋯ → Imprimir: abre o diálogo próprio e lista impressoras em background.
     OpenPrintDialog,
     /// Lista do SO pronta; pré-seleciona a default (ou a primeira).
@@ -1053,6 +1070,33 @@ impl Session {
                     ready.overflow_open = !ready.overflow_open;
                 }
                 Task::none()
+            }
+            Message::OutlineLoaded(result) => {
+                if let Session::Ready(ready) = self {
+                    ready.outline = result;
+                }
+                Task::none()
+            }
+            Message::OutlineTab(show) => {
+                if let Session::Ready(ready) = self {
+                    // Só existe aba quando há outline; sem outline, força miniaturas.
+                    ready.outline_open = show && ready.outline.is_some();
+                }
+                Task::none()
+            }
+            Message::OutlineFold(path) => {
+                if let Session::Ready(ready) = self {
+                    if !ready.outline_collapsed.remove(&path) {
+                        ready.outline_collapsed.insert(path);
+                    }
+                }
+                Task::none()
+            }
+            Message::OutlineJump(page) => {
+                if let Session::Ready(ready) = self {
+                    ready.navigate_to(page);
+                }
+                self.schedule_work()
             }
             Message::OpenPrintDialog => {
                 let Session::Ready(ready) = self else {
@@ -1474,6 +1518,10 @@ impl Session {
                 ready.open_gen = gen;
                 ready.signatures_open = false;
                 ready.pages_open = false;
+                ready.outline_open = false;
+                ready.outline = None;
+                ready.outline_collapsed.clear();
+                ready.outline_load_issued = false;
                 ready.pages_scroll_y = 0.0;
                 ready.overflow_open = false;
                 ready.restore_position();
@@ -1590,6 +1638,11 @@ impl Session {
         let Session::Ready(ready) = self else {
             return Task::none();
         };
+        // Carregamento preguiçoso do outline: um por documento, fire-and-forget.
+        if ready.outline.is_none() && !ready.outline_load_issued {
+            ready.outline_load_issued = true;
+            return outline_task(ready.engine.clone());
+        }
         if !ready.page_data_inflight.is_empty() || !ready.render_inflight.is_empty() {
             return Task::none();
         }
@@ -1631,6 +1684,21 @@ fn page_data_task(engine: PdfiumEngine, page: PageNo, doc_gen: u64) -> Task<Mess
             doc_gen,
             result,
         },
+    )
+}
+
+/// Carrega o outline (bookmarks) do documento em background. Read-only sobre
+/// o Pdfium; resulta em `Message::OutlineLoaded`.
+fn outline_task(engine: PdfiumEngine) -> Task<Message> {
+    Task::perform(
+        async move {
+            tokio::task::spawn_blocking(move || engine.outline())
+                .await
+                .ok()
+                .and_then(|result| result.ok())
+                .flatten()
+        },
+        Message::OutlineLoaded,
     )
 }
 
@@ -1921,6 +1989,54 @@ impl Ready {
 
     pub fn set_query(&mut self, query: String) {
         self.search = Search::derive(&query, &self.pages.text);
+    }
+
+    /// Linhas achatadas da árvore para a view: (caminho, profundidade, título,
+    /// página, tem_filhos). Respeita `outline_collapsed`; vazia sem outline.
+    pub(crate) fn outline_rows(&self) -> Vec<(Vec<usize>, usize, &str, PageNo, bool)> {
+        let Some(outline) = &self.outline else {
+            return Vec::new();
+        };
+        fn walk<'a>(
+            items: &'a [OutlineItem],
+            depth: usize,
+            path: &mut Vec<usize>,
+            collapsed: &HashSet<Vec<usize>>,
+            rows: &mut Vec<(Vec<usize>, usize, &'a str, PageNo, bool)>,
+        ) {
+            for (i, item) in items.iter().enumerate() {
+                path.push(i);
+                rows.push((
+                    path.clone(),
+                    depth,
+                    item.title.as_str(),
+                    item.page,
+                    !item.children.is_empty(),
+                ));
+                if !collapsed.contains(path) {
+                    walk(&item.children, depth + 1, path, collapsed, rows);
+                }
+                path.pop();
+            }
+        }
+        let mut rows = Vec::new();
+        walk(
+            &outline.items,
+            0,
+            &mut Vec::new(),
+            &self.outline_collapsed,
+            &mut rows,
+        );
+        rows
+    }
+
+    /// Caminho do último item com página <= `visible` (semântica de intervalo).
+    pub(crate) fn outline_active(&self) -> Option<Vec<usize>> {
+        self.outline_rows()
+            .into_iter()
+            .filter(|(_, _, _, page, _)| page.index() <= self.visible.index())
+            .map(|(path, _, _, _, _)| path)
+            .last()
     }
 
     pub(crate) fn thumb_page_window(&self) -> Vec<PageNo> {
@@ -2301,6 +2417,10 @@ impl Document {
             selection: None,
             signatures_open: false,
             pages_open: false,
+            outline_open: false,
+            outline: None,
+            outline_collapsed: HashSet::new(),
+            outline_load_issued: false,
             pages_scroll_y: 0.0,
             doc_scroll_y: 0.0,
             recents: Vec::new(),
@@ -2800,6 +2920,34 @@ mod tests {
         }
     }
 
+    fn outline_tree() -> Outline {
+        Outline {
+            items: vec![
+                OutlineItem {
+                    title: "A".to_string(),
+                    page: PageNo::first(),
+                    children: vec![
+                        OutlineItem {
+                            title: "A1".to_string(),
+                            page: PageNo::from_index(2),
+                            children: vec![],
+                        },
+                        OutlineItem {
+                            title: "A2".to_string(),
+                            page: PageNo::from_index(5),
+                            children: vec![],
+                        },
+                    ],
+                },
+                OutlineItem {
+                    title: "B".to_string(),
+                    page: PageNo::from_index(8),
+                    children: vec![],
+                },
+            ],
+        }
+    }
+
     #[test]
     fn doc_scrolled_derives_visible_in_continuous() {
         let Some(ready) = uniform_ready() else {
@@ -2979,6 +3127,80 @@ mod tests {
             assert_eq!(ready.hpos, 0);
         });
         let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn outline_rows_flatten_collapse_and_active() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        assert!(ready.outline_rows().is_empty());
+        assert!(ready.outline_active().is_none());
+        ready.outline = Some(outline_tree());
+        let rows = ready.outline_rows();
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].0, vec![0]);
+        assert_eq!(rows[1].0, vec![0, 0]);
+        assert!(rows[0].4);
+        assert!(!rows[1].4);
+        // Colapsar esconde os filhos.
+        ready.outline_collapsed.insert(vec![0]);
+        let rows = ready.outline_rows();
+        assert_eq!(rows.len(), 2);
+        ready.outline_collapsed.clear();
+        // Ativa = último item com página <= visible.
+        ready.visible = PageNo::from_index(3);
+        assert_eq!(ready.outline_active(), Some(vec![0, 0]));
+        ready.visible = PageNo::from_index(8);
+        assert_eq!(ready.outline_active(), Some(vec![1]));
+        ready.visible = PageNo::first();
+        assert_eq!(ready.outline_active(), Some(vec![0]));
+    }
+
+    #[test]
+    fn outline_tab_jump_fold_and_load() {
+        let Some(ready) = sample_ready() else {
+            return;
+        };
+        let last = ready.page_count().saturating_sub(1);
+        let mut session = Session::Ready(ready);
+        // Sem outline, a aba não abre.
+        apply(&mut session, Message::OutlineTab(true));
+        match &session {
+            Session::Ready(r) => assert!(!r.outline_open),
+            _ => unreachable!(),
+        }
+        // Com outline, abre; jump com clamp; fold alterna.
+        apply(&mut session, Message::OutlineLoaded(Some(outline_tree())));
+        apply(&mut session, Message::OutlineTab(true));
+        apply(&mut session, Message::OutlineJump(PageNo::from_index(9999)));
+        match &session {
+            Session::Ready(r) => {
+                assert!(r.outline_open);
+                assert_eq!(r.visible.index(), last);
+                let expected = r
+                    .outline_rows()
+                    .into_iter()
+                    .filter(|(_, _, _, page, _)| page.index() <= last)
+                    .map(|(path, _, _, _, _)| path)
+                    .last();
+                assert_eq!(r.outline_active(), expected);
+            }
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::OutlineFold(vec![0]));
+        match &session {
+            Session::Ready(r) => {
+                assert!(r.outline_collapsed.contains(&vec![0]));
+                assert_eq!(r.outline_rows().len(), 2);
+            }
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::OutlineFold(vec![0]));
+        match &session {
+            Session::Ready(r) => assert!(r.outline_collapsed.is_empty()),
+            _ => unreachable!(),
+        }
     }
 
     #[test]

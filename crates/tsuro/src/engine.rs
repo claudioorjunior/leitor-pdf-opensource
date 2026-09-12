@@ -5,7 +5,8 @@ use pdfium_render::prelude::*;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::page::{
-    Bitmap, EngineError, Glyph, MediaBox, PageEngine, PageNo, PageSurface, Quad, Scale, TextLayer,
+    Bitmap, EngineError, Glyph, MediaBox, Outline, OutlineItem, PageEngine, PageNo, PageSurface,
+    Quad, Scale, TextLayer,
 };
 
 const PDFIUM_MISSING: &str =
@@ -45,6 +46,11 @@ enum Request {
         rotation: u8,
         reply: mpsc::Sender<Result<PageSurface, EngineError>>,
     },
+    /// Lê o outline (bookmarks) do documento. Read-only: não altera o
+    /// comportamento interno do Pdfium, apenas percorre a árvore existente.
+    Outline {
+        reply: mpsc::Sender<Result<Option<Outline>, EngineError>>,
+    },
 }
 
 impl PdfiumEngine {
@@ -77,9 +83,18 @@ impl PdfiumEngine {
     pub fn page_data(&self, page: PageNo) -> Result<(MediaBox, TextLayer), EngineError> {
         self.call(|reply| Request::PageData { page, reply })
     }
+
+    /// Lê o outline (bookmarks) do documento. Read-only sobre `PdfDocument`;
+    /// não altera o estado interno do Pdfium.
+    pub fn outline(&self) -> Result<Option<Outline>, EngineError> {
+        self.call(|reply| Request::Outline { reply })
+    }
 }
 
 impl PageEngine for PdfiumEngine {
+    /// Abre um documento numa worker thread própria. Só um engine vivo por
+    /// vez: um segundo `bind` com outro worker ativo trava (limite do Pdfium,
+    /// não deste código) — o app sempre derruba o `Ready` anterior ao abrir.
     fn open(bytes: Arc<[u8]>) -> Result<Self, EngineError> {
         let (req_tx, req_rx) = mpsc::channel::<Request>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<u32, EngineError>>();
@@ -119,6 +134,9 @@ impl PageEngine for PdfiumEngine {
                             reply,
                         } => {
                             let _ = reply.send(render_from_doc(&document, page, scale, rotation));
+                        }
+                        Request::Outline { reply } => {
+                            let _ = reply.send(outline_from_doc(&document));
                         }
                     }
                 }
@@ -171,6 +189,46 @@ fn page_data_from_doc(
     };
     let text = text_layer_from_page(&pdf_page, page)?;
     Ok((media, text))
+}
+
+/// Percorre recursivamente a árvore de bookmarks do Pdfium e produz
+/// `Option<Outline>`: `None` quando não há bookmark raiz, `Some` quando há.
+/// Read-only sobre o `PdfDocument` — não altera estado interno do Pdfium.
+fn outline_from_doc(document: &PdfDocument<'_>) -> Result<Option<Outline>, EngineError> {
+    let total = document.pages().len() as u32;
+    // `root()` é o primeiro bookmark de topo (não um contêiner): o nível
+    // superior é ele mais `iter_siblings()` (que pula o próprio nó).
+    let Some(first) = document.bookmarks().root() else {
+        return Ok(None);
+    };
+    Ok(Some(Outline {
+        items: std::iter::once(first.clone())
+            .chain(first.iter_siblings())
+            .map(|child| outline_node(&child, total))
+            .collect(),
+    }))
+}
+
+fn outline_node(bookmark: &PdfBookmark<'_>, total: u32) -> OutlineItem {
+    let page = bookmark
+        .destination()
+        .and_then(|dest| dest.page_index().ok())
+        .filter(|&idx| (idx as u32) < total)
+        .map(|idx| PageNo::from_index(idx as u32))
+        .unwrap_or_else(PageNo::first);
+    let title = bookmark
+        .title()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(String::new);
+    let children = bookmark
+        .iter_direct_children()
+        .map(|child| outline_node(&child, total))
+        .collect();
+    OutlineItem {
+        title,
+        page,
+        children,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
