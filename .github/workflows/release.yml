@@ -16,6 +16,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: oven-sh/setup-bun@v2
       - name: Testes Rust
+        shell: bash
         run: |
           cargo test -p tsuro --lib -- --test-threads=1
           cargo test -p tsuro-sign --lib
@@ -35,6 +36,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Testes Rust
+        shell: bash
         run: |
           cargo test -p tsuro --lib -- --test-threads=1
           cargo test -p tsuro-sign --lib
