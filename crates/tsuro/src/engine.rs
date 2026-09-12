@@ -476,16 +476,17 @@ mod tests {
 
     #[test]
     fn pdfium_candidates_stay_next_to_the_binary() {
-        let exe = Path::new("/Applications/TsuroPDF.app/Contents/MacOS/TsuroPDF");
-        let got = pdfium_candidates_for(exe);
+        // Binário real do teste: absoluto em qualquer plataforma (um caminho
+        // estilo macOS não é absoluto no Windows e quebrava este teste lá).
+        let exe = std::env::current_exe().expect("test binary path");
+        let dir = exe.parent().expect("test binary dir");
+        let got = pdfium_candidates_for(&exe);
         assert!(got.iter().all(|p| p != Path::new(".") && p.is_absolute()));
         assert!(got.iter().any(|p| p
             .parent()
             .and_then(|d| d.file_name())
             .is_some_and(|n| n == "Frameworks")));
-        assert!(got
-            .iter()
-            .any(|p| p.parent() == Some(Path::new("/Applications/TsuroPDF.app/Contents/MacOS"))));
+        assert!(got.iter().any(|p| p.parent() == Some(dir)));
     }
 
     #[test]
