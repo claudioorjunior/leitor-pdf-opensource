@@ -847,11 +847,100 @@ fn ready_body(ready: &Ready, t: Tokens) -> Element<'_, Message> {
 }
 
 fn pages_panel(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+    if ready.outline.is_some() && ready.outline_open {
+        outline_tab(ready, t)
+    } else {
+        thumbs_tab(ready, t)
+    }
+}
+
+/// Cabeçalho com abas Miniaturas | Sumário (só quando o PDF tem outline).
+fn panel_tabs(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+    match &ready.outline {
+        None => section_title("Páginas", t),
+        Some(_) => row![
+            control_active(
+                t,
+                button(text("Miniaturas").size(12)).on_press(Message::OutlineTab(false)),
+                !ready.outline_open,
+            ),
+            control_active(
+                t,
+                button(text("Sumário").size(12)).on_press(Message::OutlineTab(true)),
+                ready.outline_open,
+            ),
+        ]
+        .spacing(4)
+        .into(),
+    }
+}
+
+/// Aba Sumário: árvore clicável com expandir/colapsar e destaque da ativa.
+fn outline_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
+    let active = ready.outline_active();
+    let mut col = column![panel_tabs(ready, t)].spacing(8);
+    for (path, depth, title, page, has_children) in ready.outline_rows() {
+        let is_active = active.as_ref() == Some(&path);
+        let fold: Element<'_, Message> = if has_children {
+            let collapsed = ready.outline_collapsed.contains(&path);
+            button(text(if collapsed { "▸" } else { "▾" }).size(12))
+                .padding(Padding::from([4, 6]))
+                .style(kiri::menu_item_style(t))
+                .on_press(Message::OutlineFold(path.clone()))
+                .into()
+        } else {
+            Space::with_width(Length::Fixed(24.0)).into()
+        };
+        let label = format!("{} · {}", outline_title(title), page.index() + 1);
+        let entry = control_active(
+            t,
+            button(
+                text(label)
+                    .size(12)
+                    .color(if is_active { t.accent } else { t.ink }),
+            )
+            .width(Length::Fill)
+            .on_press(Message::OutlineJump(page)),
+            is_active,
+        );
+        col = col.push(
+            row![
+                Space::with_width(Length::Fixed(depth as f32 * 12.0)),
+                fold,
+                entry,
+            ]
+            .spacing(2)
+            .align_y(Alignment::Center),
+        );
+    }
+    scrollable(col)
+        .id(pages_scroll_id())
+        .on_scroll(|viewport| Message::PagesScrolled(viewport.absolute_offset().y))
+        .width(Length::Fixed(156.0))
+        .height(Length::Fill)
+        .into()
+}
+
+/// Título truncado em 24 caracteres para caber no painel.
+fn outline_title(title: &str) -> String {
+    const MAX: usize = 24;
+    let end = title
+        .char_indices()
+        .nth(MAX)
+        .map(|(i, _)| i)
+        .unwrap_or(title.len());
+    if end < title.len() {
+        format!("{}…", &title[..end])
+    } else {
+        title.to_string()
+    }
+}
+fn thumbs_tab(ready: &Ready, t: Tokens) -> Element<'_, Message> {
     // Janela virtualizada do remoto: só monta as miniaturas visíveis.
     let window = ready.thumb_page_window();
     let start = window.first().map(|page| page.index()).unwrap_or(0);
     let end = window.last().map(|page| page.index() + 1).unwrap_or(0);
-    let mut col = column![section_title("Páginas", t)].spacing(8);
+    let mut col = column![panel_tabs(ready, t)].spacing(8);
     if start > 0 {
         col = col.push(Space::with_height(Length::Fixed(start as f32 * THUMB_ROW)));
     }
@@ -1111,5 +1200,23 @@ fn status_label(status: SignatureStatus) -> &'static str {
         SignatureStatus::Unsupported => "Não suportada",
         SignatureStatus::CertificateExpired => "Certificado expirado",
         SignatureStatus::CertificateNotYetValid => "Certificado ainda não válido",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::outline_title;
+
+    #[test]
+    fn outline_title_truncates_long_labels() {
+        assert_eq!(outline_title("Curto"), "Curto");
+        assert_eq!(outline_title(""), "");
+        let long = "Cláusula de rescisão contratual e multa por descumprimento";
+        let short = outline_title(long);
+        assert!(short.ends_with('…'));
+        assert_eq!(short.chars().count(), 25);
+        // Exatos 24 caracteres passam intactos.
+        let exact: String = "a".repeat(24);
+        assert_eq!(outline_title(&exact), exact);
     }
 }
