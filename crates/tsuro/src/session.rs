@@ -262,6 +262,112 @@ fn quads_for_range_monotonic(
     acc.unwrap_or(Quad::from_rect(0.0, 0.0, 0.0, 0.0))
 }
 
+/// Quad de um range arbitrário (mesma origem dos hits de busca).
+pub(crate) fn quad_for_range(glyphs: &[Glyph], start: usize, end: usize) -> Quad {
+    let mut glyph_idx = 0usize;
+    let mut byte_cursor = 0usize;
+    quads_for_range_monotonic(glyphs, start, end, &mut glyph_idx, &mut byte_cursor)
+}
+
+/// Um retângulo por linha do range (padrão dos leitores: nunca pintar o vão
+/// entre linhas). Agrupa glifos vizinhos com sobreposição vertical; x que
+/// volta para trás abre nova linha (colunas). Texto não-horizontal degrada
+/// para um grupo só (equivale ao union antigo).
+/// ponytail: heurística LTR por bbox; segmentação por baseline se precisar.
+pub(crate) fn quads_for_range_by_line(glyphs: &[Glyph], start: usize, end: usize) -> Vec<Quad> {
+    let mut cursor = 0usize;
+    let mut lines: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for glyph in glyphs {
+        let next = cursor + glyph.cluster.len();
+        if cursor < end && next > start {
+            let (x0, y0, x1, y1) = quad_bbox(glyph.quad);
+            let merge = match lines.last() {
+                Some(last) => y0 <= last.3 && y1 >= last.1 && x0 >= last.0,
+                None => false,
+            };
+            if merge {
+                let last = lines.last_mut().expect("checked above");
+                last.0 = last.0.min(x0);
+                last.1 = last.1.min(y0);
+                last.2 = last.2.max(x1);
+                last.3 = last.3.max(y1);
+            } else {
+                lines.push((x0, y0, x1, y1));
+            }
+        }
+        cursor = next;
+        if cursor >= end {
+            break;
+        }
+    }
+    lines
+        .into_iter()
+        .map(|(x0, y0, x1, y1)| Quad::from_rect(x0, y0, x1, y1))
+        .collect()
+}
+
+fn quad_bbox(quad: Quad) -> (f32, f32, f32, f32) {
+    let xs = [quad.x0, quad.x1, quad.x2, quad.x3];
+    let ys = [quad.y0, quad.y1, quad.y2, quad.y3];
+    (
+        xs.iter().fold(f32::INFINITY, |a, &b| a.min(b)),
+        ys.iter().fold(f32::INFINITY, |a, &b| a.min(b)),
+        xs.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)),
+        ys.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)),
+    )
+}
+
+/// Retângulo exibido `[x, y, w, h]` (px CSS, Y para baixo) de um quad da
+/// mídia original (espaço PDF, Y para cima), desfazendo a rotação da vista
+/// (`rotation` em quartos horários, como vista na tela).
+pub(crate) fn display_rect(
+    quad: Quad,
+    media: MediaBox,
+    rotation: u8,
+    dw: f32,
+    dh: f32,
+) -> [f32; 4] {
+    let (x0, y0, x1, y1) = quad_bbox(quad);
+    let w = media.width.max(1.0);
+    let h = media.height.max(1.0);
+    let (rx0, ry0, rx1, ry1) = match rotation & 3 {
+        0 => (x0, h - y1, x1, h - y0),
+        1 => (y0, x0, y1, x1),
+        2 => (w - x1, y0, w - x0, y1),
+        _ => (h - y1, w - x1, h - y0, w - x0),
+    };
+    let rw = if rotation & 1 == 1 { h } else { w };
+    let rh = if rotation & 1 == 1 { w } else { h };
+    [
+        rx0 / rw * dw,
+        ry0 / rh * dh,
+        (rx1 - rx0) / rw * dw,
+        (ry1 - ry0) / rh * dh,
+    ]
+}
+
+/// Inverso: ponto exibido (px CSS, Y para baixo) → ponto da mídia original
+/// (espaço PDF, Y para cima).
+pub(crate) fn page_pt_at(
+    point: [f32; 2],
+    media: MediaBox,
+    rotation: u8,
+    dw: f32,
+    dh: f32,
+) -> [f32; 2] {
+    let w = media.width.max(1.0);
+    let h = media.height.max(1.0);
+    let (rw, rh) = if rotation & 1 == 1 { (h, w) } else { (w, h) };
+    let dx = point[0] / dw * rw;
+    let dy = point[1] / dh * rh;
+    match rotation & 3 {
+        0 => [dx, h - dy],
+        1 => [dy, dx],
+        2 => [w - dx, dy],
+        _ => [w - dy, h - dx],
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Hit {
     pub page: PageNo,
@@ -269,16 +375,49 @@ pub struct Hit {
     pub quad: Quad,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextRange {
     pub start: usize,
     pub end: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selection {
     pub page: PageNo,
     pub range: TextRange,
+}
+
+/// Âncora do press (click-vs-drag no PointerUp); `exact=false` = press no
+/// vazio com snap no glifo mais próximo (clique solto desseleciona).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PressAnchor {
+    sel: Selection,
+    exact: bool,
+}
+
+/// Tipo de marcação de texto (issue #30, v1 sem persistência).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotKind {
+    Highlight,
+    Underline,
+    Strikeout,
+}
+
+/// Marcação sobre um trecho: um retângulo por linha do texto (nunca um
+/// bloco único — padrão dos leitores), em espaço da mídia original.
+#[derive(Debug, Clone)]
+pub struct Annotation {
+    pub id: u64,
+    pub page: PageNo,
+    pub range: TextRange,
+    pub quads: Vec<Quad>,
+    pub kind: AnnotKind,
+}
+
+#[derive(Debug, Clone)]
+enum AnnotAction {
+    Add(Annotation),
+    Remove(Annotation),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,6 +470,13 @@ pub struct Ready {
     page_input: String,
     pub search: Search,
     pub selection: Option<Selection>,
+    /// Marcações da sessão (issue #30); zera ao abrir. Sem persistência na v1.
+    pub annotations: Vec<Annotation>,
+    next_annot_id: u64,
+    /// Âncora do press (click-vs-drag no PointerUp); zera ao trocar de documento.
+    press_anchor: Option<PressAnchor>,
+    annot_undo: Vec<AnnotAction>,
+    annot_redo: Vec<AnnotAction>,
     pub signatures_open: bool,
     pub pages_open: bool,
     /// Aba Sumário ativa no painel de Páginas (só existe se houver outline).
@@ -657,8 +803,18 @@ pub enum Message {
         page: PageNo,
         page_pt: [f32; 2],
     },
-    PointerUp,
+    PointerUp {
+        page: PageNo,
+        page_pt: [f32; 2],
+    },
     CopySelection,
+    /// Marca a seleção atual (H/U/S ou menu ⋯); ignora sem seleção.
+    Annotate(AnnotKind),
+    /// Janela perdeu o foco no meio do drag: o Up nunca chega, então a
+    /// âncora morre aqui (senão o hover passa a estender a seleção).
+    DragCancelled,
+    AnnotUndo,
+    AnnotRedo,
     Rendered {
         page: PageNo,
         scale: Scale,
@@ -950,13 +1106,34 @@ impl Session {
             }
             Message::PointerDown { page, page_pt } => {
                 if let Session::Ready(ready) = self {
-                    if let Some(Some(layer)) = ready.pages.text.get(page.index() as usize) {
-                        if let Some(i) = layer.hit(page_pt) {
-                            let (start, end) = glyph_byte_range(layer, i);
-                            ready.selection = Some(Selection {
-                                page,
-                                range: TextRange { start, end },
-                            });
+                    match ready.pages.text.get(page.index() as usize) {
+                        Some(Some(layer)) => {
+                            // Press ancora até no vazio (snap no mais próximo);
+                            // só o clique solto no vazio desseleciona (Up).
+                            let exact = layer.hit(page_pt);
+                            let snapped = exact.or_else(|| layer.hit_nearest(page_pt));
+                            match snapped {
+                                Some(i) => {
+                                    let (start, end) = glyph_byte_range(layer, i);
+                                    let sel = Selection {
+                                        page,
+                                        range: TextRange { start, end },
+                                    };
+                                    ready.press_anchor = Some(PressAnchor {
+                                        sel: sel.clone(),
+                                        exact: exact.is_some(),
+                                    });
+                                    ready.selection = Some(sel);
+                                }
+                                None => {
+                                    ready.selection = None;
+                                    ready.press_anchor = None;
+                                }
+                            }
+                        }
+                        _ => {
+                            ready.selection = None;
+                            ready.press_anchor = None;
                         }
                     }
                 }
@@ -967,10 +1144,19 @@ impl Session {
                     if let Some(sel) = ready.selection.as_mut() {
                         if sel.page == page {
                             if let Some(Some(layer)) = ready.pages.text.get(page.index() as usize) {
-                                if let Some(i) = layer.hit(page_pt) {
-                                    let (start, end) = glyph_byte_range(layer, i);
-                                    sel.range.start = sel.range.start.min(start);
-                                    sel.range.end = sel.range.end.max(end);
+                                // Snap ao glifo mais próximo: o arrasto segue
+                                // o cursor mesmo no vão (o clique usa `hit`
+                                // exato e desseleciona no vazio).
+                                if let Some(i) = layer.hit_nearest(page_pt) {
+                                    let cursor = glyph_byte_range(layer, i);
+                                    let anchor = ready
+                                        .press_anchor
+                                        .as_ref()
+                                        .filter(|a| a.sel.page == page)
+                                        .map(|a| a.sel.range);
+                                    // Âncora fixa no press: puxar de volta
+                                    // encolhe (padrão dos leitores).
+                                    sel.range = extend_range(anchor, cursor);
                                 }
                             }
                         }
@@ -978,13 +1164,61 @@ impl Session {
                 }
                 Task::none()
             }
-            Message::PointerUp => Task::none(),
+            Message::PointerUp { page, page_pt } => {
+                if let Session::Ready(ready) = self {
+                    // Clique (press+release sem arrasto): sobre marcação
+                    // remove; no vazio desseleciona; em glifo mantém a palavra.
+                    // Arrasto só estende (já feito no PointerMove).
+                    if let Some(anchor) = ready.press_anchor.clone() {
+                        if Some(anchor.sel.clone()) == ready.selection {
+                            if let Some(id) = ready.annotation_at(page, page_pt) {
+                                ready.remove_annotation(id);
+                            } else if !anchor.exact {
+                                ready.selection = None;
+                            }
+                        }
+                    }
+                    ready.press_anchor = None;
+                }
+                Task::none()
+            }
             Message::CopySelection => {
                 if let Session::Ready(ready) = self {
                     ready.overflow_open = false;
                     if let Some(text) = ready.selection_plain_text() {
                         return clipboard::write(text);
                     }
+                }
+                Task::none()
+            }
+            Message::Annotate(kind) => {
+                if let Session::Ready(ready) = self {
+                    ready.overflow_open = false;
+                    if ready.annotate_selection(kind) {
+                        // Pós-marcação limpa a seleção (padrão dos leitores).
+                        ready.selection = None;
+                        ready.press_anchor = None;
+                    }
+                }
+                Task::none()
+            }
+            Message::DragCancelled => {
+                if let Session::Ready(ready) = self {
+                    ready.press_anchor = None;
+                }
+                Task::none()
+            }
+            Message::AnnotUndo => {
+                if let Session::Ready(ready) = self {
+                    ready.overflow_open = false;
+                    ready.annot_undo_once();
+                }
+                Task::none()
+            }
+            Message::AnnotRedo => {
+                if let Session::Ready(ready) = self {
+                    ready.overflow_open = false;
+                    ready.annot_redo_once();
                 }
                 Task::none()
             }
@@ -1075,7 +1309,9 @@ impl Session {
                 if let Session::Ready(ready) = self {
                     ready.outline = result;
                 }
-                Task::none()
+                // O outline destrava o gate em schedule_work: sem reagendar,
+                // nada mais é despachado e a folha trava em "Renderizando…".
+                self.schedule_work()
             }
             Message::OutlineTab(show) => {
                 if let Session::Ready(ready) = self {
@@ -1138,6 +1374,11 @@ impl Session {
                         .as_ref()
                         .is_none_or(|dialog| !dialog.busy)
                     {
+                        // Esc sem diálogo: desseleciona (padrão dos leitores).
+                        if ready.print_dialog.is_none() {
+                            ready.selection = None;
+                            ready.press_anchor = None;
+                        }
                         ready.print_dialog = None;
                     }
                 }
@@ -1458,6 +1699,7 @@ impl Session {
     pub fn subscription(&self) -> iced::Subscription<Message> {
         event::listen_with(|event, status, id| match event {
             Event::Window(window::Event::FileDropped(path)) => Some(Message::FileDropped(path)),
+            Event::Window(window::Event::Unfocused) => Some(Message::DragCancelled),
             Event::Window(window::Event::Opened { size, .. })
             | Event::Window(window::Event::Resized(size)) => Some(Message::WindowMetrics {
                 width: size.width,
@@ -1751,6 +1993,19 @@ pub(crate) fn keyboard_message(
     if status != event::Status::Ignored {
         return None;
     }
+    // Ctrl/Cmd+Z desfaz, com Shift refaz (antes do hist_mod: ⌘/Ctrl engolem
+    // o resto das teclas no bloco abaixo; guarda de foco cobre inputs).
+    #[cfg(target_os = "macos")]
+    let cmd = modifiers.logo() && !modifiers.control() && !modifiers.alt();
+    #[cfg(not(target_os = "macos"))]
+    let cmd = modifiers.control() && !modifiers.logo() && !modifiers.alt();
+    if cmd {
+        match key.as_ref() {
+            Key::Character("z" | "Z") if modifiers.shift() => return Some(Message::AnnotRedo),
+            Key::Character("z" | "Z") => return Some(Message::AnnotUndo),
+            _ => {}
+        }
+    }
     // Alt+←/→ (⌘ no mac): histórico voltar/avançar.
     #[cfg(target_os = "macos")]
     let hist_mod =
@@ -1775,6 +2030,10 @@ pub(crate) fn keyboard_message(
         Key::Named(Named::End) => Some(Message::Nav(NavCmd::Last)),
         // R gira a vista; com foco em campo o iced captura antes (guarda de foco).
         Key::Character("r" | "R") => Some(Message::RotateView),
+        // H/U/S marcam a seleção (o handler ignora sem seleção com texto).
+        Key::Character("h" | "H") => Some(Message::Annotate(AnnotKind::Highlight)),
+        Key::Character("u" | "U") => Some(Message::Annotate(AnnotKind::Underline)),
+        Key::Character("s" | "S") => Some(Message::Annotate(AnnotKind::Strikeout)),
         // Sem diálogo aberto o handler ignora; com foco em campo, o iced captura antes.
         Key::Named(Named::Escape) => Some(Message::ClosePrintDialog),
         _ => None,
@@ -1832,7 +2091,7 @@ impl Ready {
     }
 
     /// Mídia na orientação da vista: rotação ímpar troca largura ↔ altura.
-    fn rotated_media(&self, page: PageNo) -> MediaBox {
+    pub(crate) fn rotated_media(&self, page: PageNo) -> MediaBox {
         let media = self.media(page);
         if self.view_rotation & 1 == 1 {
             MediaBox {
@@ -1985,6 +2244,115 @@ impl Ready {
         } else {
             Some(sliced)
         }
+    }
+
+    /// Cria marcação da seleção atual; `false` sem seleção com texto (ignora).
+    pub(crate) fn annotate_selection(&mut self, kind: AnnotKind) -> bool {
+        let Some(sel) = self.selection.clone() else {
+            return false;
+        };
+        let quads = match self
+            .pages
+            .text
+            .get(sel.page.index() as usize)
+            .and_then(|l| l.as_ref())
+        {
+            Some(layer) if !layer.slice(sel.range).trim().is_empty() => {
+                quads_for_range_by_line(&layer.glyphs, sel.range.start, sel.range.end)
+            }
+            _ => return false,
+        };
+        if quads.is_empty() {
+            return false;
+        }
+        let annot = Annotation {
+            id: self.next_annot_id,
+            page: sel.page,
+            range: sel.range,
+            quads,
+            kind,
+        };
+        self.next_annot_id += 1;
+        self.apply_annot_action(AnnotAction::Add(annot.clone()));
+        self.annot_undo.push(AnnotAction::Add(annot));
+        self.annot_redo.clear();
+        true
+    }
+
+    /// Remove por id (clique sobre a marcação); `false` se não existe.
+    pub(crate) fn remove_annotation(&mut self, id: u64) -> bool {
+        let Some(annot) = self.annotations.iter().find(|a| a.id == id).cloned() else {
+            return false;
+        };
+        self.apply_annot_action(AnnotAction::Remove(annot.clone()));
+        self.annot_undo.push(AnnotAction::Remove(annot));
+        self.annot_redo.clear();
+        true
+    }
+
+    pub(crate) fn annot_undo_once(&mut self) -> bool {
+        let Some(action) = self.annot_undo.pop() else {
+            return false;
+        };
+        let inverse = match &action {
+            AnnotAction::Add(a) => AnnotAction::Remove(a.clone()),
+            AnnotAction::Remove(a) => AnnotAction::Add(a.clone()),
+        };
+        self.apply_annot_action(inverse);
+        self.annot_redo.push(action);
+        true
+    }
+
+    pub(crate) fn annot_redo_once(&mut self) -> bool {
+        let Some(action) = self.annot_redo.pop() else {
+            return false;
+        };
+        self.apply_annot_action(action.clone());
+        self.annot_undo.push(action);
+        true
+    }
+
+    pub(crate) fn can_annot_undo(&self) -> bool {
+        !self.annot_undo.is_empty()
+    }
+
+    pub(crate) fn can_annot_redo(&self) -> bool {
+        !self.annot_redo.is_empty()
+    }
+
+    /// Id da marcação sob o ponto (espaço da mídia original); `None` fora.
+    pub(crate) fn annotation_at(&self, page: PageNo, page_pt: [f32; 2]) -> Option<u64> {
+        let [x, y] = page_pt;
+        self.annotations
+            .iter()
+            .find(|a| a.page == page && a.quads.iter().any(|q| q.contains(x, y)))
+            .map(|a| a.id)
+    }
+
+    fn apply_annot_action(&mut self, action: AnnotAction) {
+        match action {
+            AnnotAction::Add(a) => {
+                if self.annotations.iter().all(|e| e.id != a.id) {
+                    self.annotations.push(a);
+                }
+            }
+            AnnotAction::Remove(a) => self.annotations.retain(|e| e.id != a.id),
+        }
+    }
+
+    /// Retângulos da seleção atual em espaço da mídia original, um por linha
+    /// (`None` sem texto).
+    pub(crate) fn selection_quads(&self) -> Option<(PageNo, Vec<Quad>)> {
+        let sel = self.selection.as_ref()?;
+        let layer = self.pages.text.get(sel.page.index() as usize)?.as_ref()?;
+        if layer.slice(sel.range).trim().is_empty() {
+            return None;
+        }
+        let quads = quads_for_range_by_line(&layer.glyphs, sel.range.start, sel.range.end);
+        if quads.is_empty() {
+            return None;
+        }
+        Some((sel.page, quads))
     }
 
     pub fn set_query(&mut self, query: String) {
@@ -2415,6 +2783,11 @@ impl Document {
             page_input: String::new(),
             search: Search::derive("", &[]),
             selection: None,
+            annotations: Vec::new(),
+            next_annot_id: 0,
+            press_anchor: None,
+            annot_undo: Vec::new(),
+            annot_redo: Vec::new(),
             signatures_open: false,
             pages_open: false,
             outline_open: false,
@@ -2488,6 +2861,19 @@ fn glyph_byte_range(layer: &TextLayer, index: usize) -> (usize, usize) {
         cursor = next;
     }
     (0, 0)
+}
+
+/// Estende a seleção a partir da âncora do press: puxar de volta encolhe
+/// (padrão dos leitores); sem âncora, ancora no cursor.
+fn extend_range(anchor: Option<TextRange>, cursor: (usize, usize)) -> TextRange {
+    let (start, end) = match anchor {
+        Some(a) => (a.start, a.end),
+        None => cursor,
+    };
+    TextRange {
+        start: start.min(cursor.0),
+        end: end.max(cursor.1),
+    }
 }
 
 impl std::fmt::Debug for Ready {
@@ -3071,6 +3457,329 @@ mod tests {
             Status::Ignored
         )
         .is_none());
+    }
+
+    #[test]
+    fn annot_shortcuts_mark_undo_redo() {
+        use iced::event::Status;
+        use iced::keyboard::Modifiers;
+        let plain = Modifiers::empty();
+        assert!(matches!(
+            keyboard_message(Key::Character("h".into()), plain, Status::Ignored),
+            Some(Message::Annotate(AnnotKind::Highlight))
+        ));
+        assert!(matches!(
+            keyboard_message(Key::Character("U".into()), plain, Status::Ignored),
+            Some(Message::Annotate(AnnotKind::Underline))
+        ));
+        assert!(matches!(
+            keyboard_message(Key::Character("s".into()), plain, Status::Ignored),
+            Some(Message::Annotate(AnnotKind::Strikeout))
+        ));
+        #[cfg(target_os = "macos")]
+        let cmd = Modifiers::LOGO;
+        #[cfg(not(target_os = "macos"))]
+        let cmd = Modifiers::CTRL;
+        assert!(matches!(
+            keyboard_message(Key::Character("z".into()), cmd, Status::Ignored),
+            Some(Message::AnnotUndo)
+        ));
+        assert!(matches!(
+            keyboard_message(
+                Key::Character("Z".into()),
+                cmd | Modifiers::SHIFT,
+                Status::Ignored
+            ),
+            Some(Message::AnnotRedo)
+        ));
+        // Com foco em campo o iced captura antes (guarda de foco).
+        assert!(keyboard_message(Key::Character("h".into()), plain, Status::Captured).is_none());
+    }
+
+    #[test]
+    fn annotate_clears_selection_and_unfocus_kills_drag() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.selection = Some(Selection {
+            page: PageNo::first(),
+            range: TextRange { start: 0, end: 2 },
+        });
+        let mut session = Session::Ready(ready);
+        // Marcar limpa a seleção (padrão dos leitores).
+        apply(&mut session, Message::Annotate(AnnotKind::Highlight));
+        match &session {
+            Session::Ready(ready) => {
+                assert_eq!(ready.annotations.len(), 1);
+                assert!(ready.selection.is_none());
+            }
+            _ => unreachable!(),
+        }
+        // Unfocus no meio do drag mata a âncora, mantém a seleção.
+        match &mut session {
+            Session::Ready(ready) => {
+                ready.selection = Some(Selection {
+                    page: PageNo::first(),
+                    range: TextRange { start: 0, end: 2 },
+                });
+                ready.press_anchor = Some(PressAnchor {
+                    sel: Selection {
+                        page: PageNo::first(),
+                        range: TextRange { start: 0, end: 2 },
+                    },
+                    exact: true,
+                });
+            }
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::DragCancelled);
+        match &session {
+            Session::Ready(ready) => {
+                assert!(ready.press_anchor.is_none());
+                assert!(ready.selection.is_some());
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn display_rect_roundtrips_page_pt_in_all_rotations() {
+        let media = MediaBox {
+            width: 100.0,
+            height: 200.0,
+        };
+        let quad = Quad::from_rect(10.0, 20.0, 30.0, 60.0);
+        for rot in 0..4u8 {
+            let (dw, dh) = if rot & 1 == 1 {
+                (400.0, 200.0)
+            } else {
+                (200.0, 400.0)
+            };
+            let r = display_rect(quad, media, rot, dw, dh);
+            // 20×40 pt vira 40×80 px; rotação ímpar troca os eixos (80×40).
+            let (ew, eh) = if rot & 1 == 1 {
+                (80.0, 40.0)
+            } else {
+                (40.0, 80.0)
+            };
+            assert!((r[2] - ew).abs() < 0.01, "rot {rot}: {r:?}");
+            assert!((r[3] - eh).abs() < 0.01, "rot {rot}: {r:?}");
+            // Centro exibido volta ao centro original.
+            let pt = page_pt_at([r[0] + r[2] / 2.0, r[1] + r[3] / 2.0], media, rot, dw, dh);
+            assert!((pt[0] - 20.0).abs() < 0.02, "rot {rot}: {pt:?}");
+            assert!((pt[1] - 40.0).abs() < 0.02, "rot {rot}: {pt:?}");
+        }
+        // Âncora absoluta de orientação (espaço PDF tem Y para cima, tela
+        // para baixo): faixa na base do PDF aparece na base da tela.
+        let bottom = display_rect(
+            Quad::from_rect(0.0, 0.0, 100.0, 20.0),
+            media,
+            0,
+            200.0,
+            400.0,
+        );
+        assert!((bottom[1] - 360.0).abs() < 0.01, "flip Y: {bottom:?}");
+        assert!((bottom[3] - 40.0).abs() < 0.01, "flip Y: {bottom:?}");
+        // Topo da tela volta ao topo do PDF.
+        let pt = page_pt_at([100.0, 0.0], media, 0, 200.0, 400.0);
+        assert!((pt[0] - 50.0).abs() < 0.01, "flip Y: {pt:?}");
+        assert!((pt[1] - 200.0).abs() < 0.01, "flip Y: {pt:?}");
+    }
+
+    #[test]
+    fn annotate_selection_undo_redo_remove() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        // Sem seleção: ignora.
+        assert!(!ready.annotate_selection(AnnotKind::Highlight));
+        assert!(ready.annotations.is_empty());
+        let len = match ready.pages.text.first() {
+            Some(Some(layer)) => layer.plain.len(),
+            _ => return,
+        };
+        if len < 2 {
+            return;
+        }
+        let sel = Selection {
+            page: PageNo::first(),
+            range: TextRange { start: 0, end: 2 },
+        };
+        ready.selection = Some(sel.clone());
+        assert!(ready.annotate_selection(AnnotKind::Highlight));
+        assert_eq!(ready.annotations.len(), 1);
+        assert_eq!(ready.annotations[0].kind, AnnotKind::Highlight);
+        assert!(ready.can_annot_undo());
+        // Undo esvazia, redo restaura.
+        assert!(ready.annot_undo_once());
+        assert!(ready.annotations.is_empty());
+        assert!(ready.can_annot_redo());
+        assert!(ready.annot_redo_once());
+        assert_eq!(ready.annotations.len(), 1);
+        // Nova ação limpa o redo.
+        assert!(ready.annot_undo_once());
+        assert!(ready.annotate_selection(AnnotKind::Underline));
+        assert!(!ready.can_annot_redo());
+        // Clique sobre a marcação acha o id; fora não.
+        let annot = ready.annotations[0].clone();
+        assert!(!annot.quads.is_empty());
+        let q = annot.quads[0];
+        let xs = [q.x0, q.x1, q.x2, q.x3];
+        let ys = [q.y0, q.y1, q.y2, q.y3];
+        let center = [
+            (xs.iter().fold(f32::INFINITY, |a, &b| a.min(b))
+                + xs.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)))
+                / 2.0,
+            (ys.iter().fold(f32::INFINITY, |a, &b| a.min(b))
+                + ys.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b)))
+                / 2.0,
+        ];
+        assert_eq!(ready.annotation_at(annot.page, center), Some(annot.id));
+        assert_eq!(ready.annotation_at(annot.page, [-1000.0, -1000.0]), None);
+        // PointerUp sem arrasto remove via mensagens.
+        ready.press_anchor = Some(PressAnchor { sel, exact: true });
+        let mut session = Session::Ready(ready);
+        apply(
+            &mut session,
+            Message::PointerUp {
+                page: annot.page,
+                page_pt: center,
+            },
+        );
+        match &session {
+            Session::Ready(ready) => assert!(ready.annotations.is_empty()),
+            _ => unreachable!(),
+        }
+    }
+
+    fn glyph_at(cluster: &str, x0: f32, y0: f32, x1: f32, y1: f32) -> Glyph {
+        Glyph {
+            cluster: cluster.to_string(),
+            quad: Quad::from_rect(x0, y0, x1, y1),
+        }
+    }
+
+    #[test]
+    fn quads_by_line_split_lines_and_columns() {
+        // Duas linhas + segunda coluna na mesma faixa: 3 retângulos, sem vão.
+        let glyphs = vec![
+            glyph_at("a", 0.0, 0.0, 10.0, 10.0),
+            glyph_at("b", 10.0, 0.0, 20.0, 10.0),
+            glyph_at("c", 0.0, 20.0, 10.0, 30.0),
+            glyph_at("d", -20.0, 20.0, -10.0, 30.0),
+        ];
+        let quads = quads_for_range_by_line(&glyphs, 0, 4);
+        assert_eq!(quads.len(), 3);
+        // Linha 1 cobre só a primeira faixa (sem vazar para a de baixo).
+        let top = quad_bbox(quads[0]);
+        assert_eq!((top.0, top.1, top.2, top.3), (0.0, 0.0, 20.0, 10.0));
+        // Range vazio: nada.
+        assert!(quads_for_range_by_line(&glyphs, 4, 4).is_empty());
+    }
+
+    #[test]
+    fn drag_back_shrinks_to_anchor() {
+        let anchor = Some(TextRange { start: 10, end: 20 });
+        // Para frente: estende o fim.
+        assert_eq!(
+            extend_range(anchor, (15, 25)),
+            TextRange { start: 10, end: 25 }
+        );
+        // Para trás: estende o início.
+        assert_eq!(
+            extend_range(anchor, (0, 5)),
+            TextRange { start: 0, end: 20 }
+        );
+        // De volta para dentro: encolhe até a âncora (não menos).
+        assert_eq!(
+            extend_range(anchor, (12, 13)),
+            TextRange { start: 10, end: 20 }
+        );
+        // Sem âncora: ancora no cursor.
+        assert_eq!(extend_range(None, (4, 9)), TextRange { start: 4, end: 9 });
+    }
+
+    #[test]
+    fn pointer_down_miss_and_escape_clear_selection() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.selection = Some(Selection {
+            page: PageNo::first(),
+            range: TextRange { start: 0, end: 2 },
+        });
+        let mut session = Session::Ready(ready);
+        // Press longe de qualquer glifo: ancora no mais próximo (snap).
+        apply(
+            &mut session,
+            Message::PointerDown {
+                page: PageNo::first(),
+                page_pt: [-1000.0, -1000.0],
+            },
+        );
+        match &session {
+            Session::Ready(ready) => assert!(ready.selection.is_some()),
+            _ => unreachable!(),
+        }
+        // ...mas soltar sem arrastar no vazio limpa (clique no vazio).
+        apply(
+            &mut session,
+            Message::PointerUp {
+                page: PageNo::first(),
+                page_pt: [-1000.0, -1000.0],
+            },
+        );
+        match &session {
+            Session::Ready(ready) => assert!(ready.selection.is_none()),
+            _ => unreachable!(),
+        }
+        // Esc sem diálogo também limpa.
+        match &mut session {
+            Session::Ready(ready) => {
+                ready.selection = Some(Selection {
+                    page: PageNo::first(),
+                    range: TextRange { start: 0, end: 2 },
+                });
+            }
+            _ => unreachable!(),
+        }
+        apply(&mut session, Message::ClosePrintDialog);
+        match &session {
+            Session::Ready(ready) => assert!(ready.selection.is_none()),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn drag_from_blank_extends_from_snapped_anchor() {
+        let Some(mut ready) = sample_ready() else {
+            return;
+        };
+        ready.selection = None;
+        let mut session = Session::Ready(ready);
+        // Press no vazio ancora no glifo mais próximo...
+        apply(
+            &mut session,
+            Message::PointerDown {
+                page: PageNo::first(),
+                page_pt: [-1000.0, -1000.0],
+            },
+        );
+        // ...e arrastar dali estende a seleção (não fica travada).
+        apply(
+            &mut session,
+            Message::PointerMove {
+                page: PageNo::first(),
+                page_pt: [9000.0, 9000.0],
+            },
+        );
+        match &session {
+            Session::Ready(ready) => {
+                let sel = ready.selection.clone().expect("snap ancora");
+                assert!(sel.range.end > sel.range.start, "{sel:?}");
+            }
+            _ => unreachable!(),
+        }
     }
 
     #[test]
